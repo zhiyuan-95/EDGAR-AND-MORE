@@ -1,0 +1,66 @@
+1. Revenue
+PRIMARY: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax
+ALTERNATIVES:
+  - us-gaap:Revenues
+  - us-gaap:SalesRevenueNet
+  - us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax
+
+2. Gross Profit
+PRIMARY: us-gaap:GrossProfit
+
+3. Operating Income
+PRIMARY: us-gaap:OperatingIncomeLoss
+
+4. Net Income
+PRIMARY: us-gaap:NetIncomeLoss
+ALTERNATIVES:
+  - us-gaap:ProfitLoss
+
+5. Cash
+PRIMARY: us-gaap:CashAndCashEquivalentsAtCarryingValue
+ALTERNATIVES:
+  - us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents
+  - us-gaap:CashAndDueFromBanks
+
+6. Total Assets
+PRIMARY: us-gaap:Assets
+
+7. Total Liabilities
+PRIMARY: us-gaap:Liabilities
+
+8. Equity
+PRIMARY: us-gaap:StockholdersEquity
+ALTERNATIVES:
+  - us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+
+9. Debt
+DERIVED / MULTI-CONCEPT:
+  - us-gaap:DebtCurrent
+  - us-gaap:ShortTermBorrowings
+  - us-gaap:LongTermDebtCurrent
+  - us-gaap:LongTermDebtNoncurrent
+  - us-gaap:LongTermDebt
+
+10. Operating Cash Flow
+PRIMARY: us-gaap:NetCashProvidedByUsedInOperatingActivities
+ALTERNATIVES:
+  - us-gaap:NetCashProvidedByUsedInOperatingActivitiesContinuingOperations
+
+11. CapEx
+PRIMARY: us-gaap:PaymentsToAcquirePropertyPlantAndEquipment
+ALTERNATIVES:
+  - us-gaap:PaymentsForAdditionsToPropertyPlantAndEquipment
+
+12. Free Cash Flow
+DERIVED:
+  Operating Cash Flow - CapEx
+
+13. EPS
+PRIMARY: us-gaap:EarningsPerShareDiluted
+ALTERNATIVES:
+  - us-gaap:EarningsPerShareBasic
+
+14. Shares Outstanding
+PRIMARY: us-gaap:CommonStockSharesOutstanding
+ALTERNATIVES:
+  - dei:EntityCommonStockSharesOutstanding

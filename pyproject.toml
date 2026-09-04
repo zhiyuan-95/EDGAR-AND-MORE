@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sec-inline-financials"
+version = "0.1.0"
+description = "CLI explorer for SEC Inline XBRL annual facts using Arelle"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "arelle-release>=2.41,<2.42",
+]
+
+[project.scripts]
+sec-inline-financials = "sec_inline_financials.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17,<2",
+    "pytest>=8.4,<9",
+    "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sec_inline_financials"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: contacts SEC and processes a real filing with Arelle"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".cache", ".venv", "output"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["sec_inline_financials"]
+
+[[tool.mypy.overrides]]
+module = ["arelle", "arelle.*"]
+ignore_missing_imports = true

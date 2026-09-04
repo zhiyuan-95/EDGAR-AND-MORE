@@ -1,0 +1,11 @@
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+config.env
+config.txt
+output/
+.gstack/

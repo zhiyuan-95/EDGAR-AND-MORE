@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SEC Metric Explorer - rough wireframe</title>
+  <style>
+    /* Rough monochrome wireframe: hierarchy and interaction are being tested, not visual polish. */
+    :root { --ink:#1f1f1f; --muted:#666; --line:#aaa; --paper:#fafafa; --panel:#fff; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font:14px/1.45 system-ui, sans-serif; }
+    button, select { font:inherit; color:inherit; background:#fff; border:1px solid var(--line); border-radius:2px; padding:7px 10px; }
+    button { cursor:pointer; }
+    button[aria-pressed="true"], .active { outline:2px solid var(--ink); outline-offset:-2px; }
+    header { min-height:66px; padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:18px; }
+    .brand { font-weight:700; letter-spacing:.03em; }
+    .demo { padding:2px 6px; border:1px dashed var(--line); color:var(--muted); font-size:11px; }
+    .company { display:flex; gap:8px; align-items:center; flex:1; }
+    .company select { min-width:240px; }
+    .freshness { text-align:right; color:var(--muted); font-size:12px; }
+    main { display:grid; grid-template-columns:210px minmax(520px, 1fr) 330px; min-height:calc(100vh - 66px); }
+    aside, section { border-right:1px solid var(--line); }
+    .metrics { padding:18px 14px; }
+    .eyebrow { margin:0 0 10px; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+    .metric { width:100%; display:flex; justify-content:space-between; align-items:center; margin:0 0 6px; text-align:left; }
+    .state { display:inline-block; padding:1px 5px; border:1px solid var(--line); font-size:10px; text-transform:uppercase; }
+    .state.derived { border-style:dashed; }
+    .state.issue { border-style:double; border-width:3px; }
+    .center { padding:20px 22px 26px; }
+    .toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    h1 { margin:0; font-size:24px; }
+    h2 { margin:0; font-size:17px; }
+    .subtitle { margin:4px 0 0; color:var(--muted); }
+    .period-toggle { display:flex; gap:5px; }
+    .summary { display:flex; gap:26px; margin:22px 0 12px; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .summary strong { display:block; font-size:20px; }
+    .summary span { color:var(--muted); font-size:11px; }
+    .chart-wrap { border:1px solid var(--line); background:#fff; padding:14px 14px 8px; }
+    .chart-note { display:flex; justify-content:space-between; margin-bottom:4px; color:var(--muted); font-size:11px; }
+    svg { width:100%; height:300px; }
+    .grid { stroke:#ddd; stroke-width:1; }
+    .axis { stroke:#777; stroke-width:1; }
+    .trend { fill:none; stroke:#222; stroke-width:3; }
+    .point { fill:#fff; stroke:#222; stroke-width:3; cursor:pointer; }
+    .point:hover, .point.selected { fill:#222; }
+    .label { fill:#666; font-size:11px; }
+    .legend { display:flex; gap:14px; padding-top:8px; border-top:1px dashed #ccc; color:var(--muted); font-size:11px; }
+    .legend i { width:12px; height:12px; display:inline-block; margin-right:4px; border:2px solid #222; vertical-align:-2px; }
+    .legend .d { border-style:dashed; }
+    .legend .u { border-style:double; border-width:3px; }
+    .notice { margin-top:14px; padding:10px 12px; border:1px dashed var(--line); }
+    .evidence { padding:18px; border-right:0; background:#fff; }
+    .evidence-head { display:flex; justify-content:space-between; gap:8px; align-items:start; padding-bottom:12px; border-bottom:1px solid var(--line); }
+    .value { margin:18px 0 2px; font-size:28px; }
+    dl { margin:14px 0; }
+    dt { margin-top:10px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+    dd { margin:2px 0 0; overflow-wrap:anywhere; }
+    code { font:12px ui-monospace, monospace; }
+    .derivation { padding:10px; border:1px dashed var(--line); background:#fafafa; }
+    .actions { display:grid; gap:7px; margin-top:16px; }
+    .primary { background:#222; color:#fff; border-color:#222; }
+    footer { position:fixed; right:12px; bottom:10px; padding:4px 7px; background:#fff; border:1px dashed var(--line); color:var(--muted); font-size:10px; }
+    @media (max-width:1050px) { main { grid-template-columns:180px 1fr; } .evidence { grid-column:1 / -1; border-top:1px solid var(--line); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">SEC METRIC EXPLORER</div>
+    <div class="demo">ROUGH WIREFRAME / DEMO VALUES</div>
+    <div class="company">
+      <label for="company">Company</label>
+      <select id="company"><option>Microsoft Corp. (MSFT)</option></select>
+    </div>
+    <div class="freshness">Data through FY2026 Q3<br>Checked 8 minutes ago</div>
+    <button>Refresh filings</button>
+  </header>
+
+  <main>
+    <!-- Metric navigation makes state visible before a user opens the evidence. -->
+    <aside class="metrics">
+      <p class="eyebrow">Target metrics</p>
+      <button class="metric" data-metric="Revenue" aria-pressed="true"><span>Revenue</span><span class="state">reported</span></button>
+      <button class="metric" data-metric="Operating Income" aria-pressed="false"><span>Operating income</span><span class="state">reported</span></button>
+      <button class="metric" data-metric="Net Income" aria-pressed="false"><span>Net income</span><span class="state">reported</span></button>
+      <button class="metric" data-metric="Total Assets" aria-pressed="false"><span>Total assets</span><span class="state">reported</span></button>
+      <button class="metric" data-metric="Total Liabilities" aria-pressed="false"><span>Total liabilities</span><span class="state">reported</span></button>
+      <button class="metric" data-metric="Equity" aria-pressed="false"><span>Equity</span><span class="state issue">conflict</span></button>
+      <button class="metric" data-metric="Operating Cash Flow" aria-pressed="false"><span>Operating cash flow</span><span class="state derived">derived</span></button>
+      <div class="notice"><strong>1 item needs review</strong><br><span class="subtitle">Equity FY2024 has two conflicting eligible facts.</span></div>
+    </aside>
+
+    <section class="center">
+      <div class="toolbar">
+        <div><h1 id="metric-title">Revenue trend</h1><p class="subtitle" id="metric-subtitle">Six most recent filed 10-Q periods · USD millions</p></div>
+        <div class="period-toggle"><button aria-pressed="false">Annual</button><button aria-pressed="true">Quarterly</button></div>
+      </div>
+      <div class="summary">
+        <div><strong id="latest-value">$65,585M</strong><span>latest value</span></div>
+        <div><strong id="change-value">+10.1%</strong><span>year over year</span></div>
+        <div><strong id="coverage-value">6 / 6</strong><span>periods resolved</span></div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-note"><span>Click any point to inspect its proof</span><span id="chart-state">All points reported</span></div>
+        <svg viewBox="0 0 720 300" role="img" aria-label="Financial metric trend chart">
+          <line class="grid" x1="58" y1="45" x2="690" y2="45"/><line class="grid" x1="58" y1="115" x2="690" y2="115"/><line class="grid" x1="58" y1="185" x2="690" y2="185"/><line class="grid" x1="58" y1="255" x2="690" y2="255"/>
+          <line class="axis" x1="58" y1="255" x2="690" y2="255"/><line class="axis" x1="58" y1="35" x2="58" y2="255"/>
+          <text class="label" x="8" y="49">$70B</text><text class="label" x="8" y="119">$60B</text><text class="label" x="8" y="189">$50B</text><text class="label" x="8" y="259">$40B</text>
+          <path id="trend" class="trend" d="M80 207 L195 180 L310 148 L425 126 L540 90 L655 62"/>
+          <g id="points">
+            <circle class="point" data-index="0" cx="80" cy="207" r="6"/><circle class="point" data-index="1" cx="195" cy="180" r="6"/><circle class="point" data-index="2" cx="310" cy="148" r="6"/><circle class="point" data-index="3" cx="425" cy="126" r="6"/><circle class="point" data-index="4" cx="540" cy="90" r="6"/><circle class="point selected" data-index="5" cx="655" cy="62" r="6"/>
+          </g>
+          <text class="label" x="61" y="278">FY24 Q1</text><text class="label" x="176" y="278">FY24 Q2</text><text class="label" x="291" y="278">FY24 Q3</text><text class="label" x="406" y="278">FY25 Q1</text><text class="label" x="521" y="278">FY25 Q2</text><text class="label" x="636" y="278">FY25 Q3</text>
+        </svg>
+        <div class="legend"><span><i></i> Reported</span><span><i class="d"></i> Derived with lineage</span><span><i class="u"></i> Needs review</span></div>
+      </div>
+      <div class="notice"><strong>Partial and failure behavior</strong> · A missing period stays as a labeled gap. A refresh failure keeps the last verified publication visible and reports the failed run separately.</div>
+    </section>
+
+    <!-- Evidence stays adjacent to the chart: one click from claim to source. -->
+    <aside class="evidence">
+      <div class="evidence-head"><div><p class="eyebrow">Point evidence</p><h2 id="evidence-period">Revenue · FY2025 Q3</h2></div><span class="state" id="evidence-state">reported</span></div>
+      <div class="value" id="evidence-value">$65,585M</div>
+      <div class="subtitle">Verified publication · exact value retained in storage</div>
+      <dl>
+        <dt>Concept</dt><dd><code id="concept">us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax</code></dd>
+        <dt>Period</dt><dd id="period">2025-01-01 → 2025-03-31 (duration)</dd>
+        <dt>Filing</dt><dd><code>0000950170-25-049122</code> · 10-Q</dd>
+        <dt>Mapping</dt><dd id="mapping">Direct mapping · primary candidate</dd>
+        <dt>Validation</dt><dd>No blocking Arelle validation finding linked to this fact.</dd>
+      </dl>
+      <div class="derivation" id="derivation" hidden><strong>Derived standalone quarter</strong><br>FY2025 nine-month YTD cash flow minus FY2025 six-month YTD cash flow. Both source facts remain linked and downloadable.</div>
+      <div class="actions">
+        <button class="primary">Download this point + evidence</button>
+        <button>Download complete metric bundle</button>
+        <button>Open filing source</button>
+      </div>
+    </aside>
+  </main>
+  <footer>State sketch: verified success + conflict + derived + partial-refresh behavior</footer>
+
+  <script>
+    // Small interaction proves the main information architecture without committing to a frontend framework.
+    const series = {
+      "Revenue": { values:[46.98, 52.75, 56.19, 56.52, 62.02, 65.59], labels:["$46,980M","$52,747M","$56,189M","$56,517M","$62,020M","$65,585M"], state:"reported", latest:"$65,585M", change:"+10.1%", coverage:"6 / 6", concept:"us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", mapping:"Direct mapping · primary candidate", derived:false },
+      "Operating Cash Flow": { values:[30.6, 11.0, 21.4, 34.2, 12.8, 19.1], labels:["$30,583M","$11,005M","$21,406M","$34,180M","$12,795M","$19,085M"], state:"derived", latest:"$19,085M", change:"-10.8%", coverage:"6 / 6", concept:"us-gaap:NetCashProvidedByUsedInOperatingActivities", mapping:"Derived from compatible cumulative YTD facts", derived:true }
+    };
+    let current = "Revenue";
+    const x = [80,195,310,425,540,655];
+    function draw(name) {
+      current = name; const s = series[name] || series.Revenue;
+      document.querySelectorAll('.metric').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.metric === name)));
+      document.getElementById('metric-title').textContent = name + ' trend';
+      document.getElementById('latest-value').textContent = s.latest;
+      document.getElementById('change-value').textContent = s.change;
+      document.getElementById('coverage-value').textContent = s.coverage;
+      document.getElementById('chart-state').textContent = s.derived ? 'Derived points retain source lineage' : 'All points reported';
+      const min = Math.min(...s.values), max = Math.max(...s.values), span = Math.max(max-min, 1);
+      const y = s.values.map(v => 230 - ((v-min)/span)*160);
+      document.getElementById('trend').setAttribute('d', x.map((n,i)=>(i?'L':'M')+n+' '+y[i]).join(' '));
+      document.querySelectorAll('.point').forEach((p,i) => { p.setAttribute('cy', y[i]); p.classList.toggle('selected', i===5); });
+      showPoint(5);
+    }
+    function showPoint(i) {
+      const s = series[current] || series.Revenue;
+      document.querySelectorAll('.point').forEach((p,n)=>p.classList.toggle('selected', n===i));
+      document.getElementById('evidence-period').textContent = current + ' · ' + ['FY2024 Q1','FY2024 Q2','FY2024 Q3','FY2025 Q1','FY2025 Q2','FY2025 Q3'][i];
+      document.getElementById('evidence-value').textContent = s.labels[i];
+      document.getElementById('evidence-state').textContent = s.state;
+      document.getElementById('concept').textContent = s.concept;
+      document.getElementById('mapping').textContent = s.mapping;
+      document.getElementById('derivation').hidden = !s.derived;
+    }
+    document.querySelectorAll('.metric').forEach(b=>b.addEventListener('click',()=>draw(b.dataset.metric)));
+    document.querySelectorAll('.point').forEach(p=>p.addEventListener('click',()=>showPoint(Number(p.dataset.index))));
+  </script>
+</body>
+</html>

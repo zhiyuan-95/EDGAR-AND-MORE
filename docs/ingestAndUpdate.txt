@@ -1,0 +1,245 @@
+You are working on the SEC Insight RAG project.
+
+SYSTEM SCOPE
+- SQLite stores company state, normalized facts, filing metadata, approved
+  mappings, mapped financial metrics, derived indicators, and retrieval chunks.
+- The configured database path is controlled by STOCK_SQL_DB_PATH.
+- The inspected configuration used stock_data.db.
+- Financial ingestion and retrieval-index synchronization are separate operations.
+- The proposed Arelle evidence database and LLM evidence-packet architecture
+  must not be described as already implemented.
+
+1. UPDATE ENTRY POINT
+
+The public entry point is:
+
+ingest_company(ticker, settings)
+
+Updates are request-triggered. A next-check date does not itself schedule or
+execute ingestion.
+
+Decision sequence:
+
+A. Company does not exist:
+   Perform initial SEC ingestion.
+
+B. Company exists:
+   Check annual refresh, quarterly refresh, and Inline XBRL enrichment eligibility.
+
+   If any check requires processing:
+       Run the SEC ingestion path.
+   Otherwise:
+       Reuse locally stored source data.
+       Refresh local mappings, metrics, and indicators without SEC calls.
+
+Important:
+"reused_local" means no SEC retrieval, not necessarily no database writes.
+
+2. SEC INGESTION SEQUENCE
+
+Execute the following conceptual sequence:
+
+1. Resolve the ticker to CIK.
+2. Fetch SEC submissions and Company Facts.
+3. Normalize Company Facts.
+4. Initialize required SQLite tables and additive schema columns.
+5. Upsert normalized observations into raw_xbrl_facts.
+6. Read stored facts and determine active fiscal-period keys and accessions.
+7. Match active accessions against the recent SEC filing inventory.
+8. Download missing selected filing documents; reuse existing local documents.
+9. Upsert company metadata and refresh dates.
+10. Resolve and persist company industry labels.
+11. Determine whether new selected accessions were discovered.
+12. If no new accession was found, advance applicable due check dates.
+13. Upsert filing metadata and update filing active-window flags.
+14. Clean up eligible inactive downloaded filing documents.
+15. Load applicable approved concept mappings.
+16. Run conditional Inline XBRL/Arelle enrichment when needed.
+17. Map usable raw facts into base financial metrics.
+18. Upsert financial_metrics.
+19. Mark existing company indicators inactive.
+20. Recalculate active-period indicators and upsert results.
+
+3. REFRESH-DATE POLICY
+
+The companies table stores:
+
+- latest_10k_filing_date
+- latest_10q_filing_date
+- next_check_date_10k
+- next_check_date_10q
+
+A check is due when its date is missing or today >= next_check_date.
+
+Initial next-check calculations:
+
+- 10-K: filing date + 12 months.
+- Q1/Q2 10-Q: filing date + 3 months.
+- Q3 10-Q: filing date + 6 months.
+
+Move calculated dates backward to the preceding business day when necessary,
+using the implementation's weekend/market-holiday calendar.
+
+These are polling heuristics, not guaranteed publication dates.
+
+If processing finds no new selected filing accession:
+- Return checked_no_update.
+- Move applicable due checks to the next business day after today.
+
+A due annual or quarterly check enters the shared ingestion path; it does not
+mean the code fetches only that form's data.
+
+4. RESULT STATUS SEMANTICS
+
+initialized:
+    First successful ingestion for the company.
+
+updated:
+    New selected filing accession(s) were discovered.
+
+checked_no_update:
+    SEC was checked, but no new selected accession was discovered.
+    Company Facts may still have been upserted.
+    Metrics and indicators may still have changed.
+
+reused_local:
+    SEC retrieval was skipped.
+    Local label backfill, metric mapping, and indicator recalculation can occur.
+
+refresh_failed_using_local_data:
+    A SecIngestionError occurred for an existing company.
+    The system falls back to local data and can recalculate local outputs.
+
+Do not interpret these statuses as precise counts of database inserts or updates.
+
+5. TABLE UPDATE RULES
+
+companies:
+- Identity: CIK.
+- Upsert metadata and refresh dates.
+
+raw_xbrl_facts:
+- Identity includes CIK, taxonomy, concept, unit, start/end dates, fiscal year,
+  fiscal period, form, accession, frame, and dimensions.
+- Value is not part of the identity.
+- Matching identities update existing rows.
+- Different accessions or dimensional identities can produce separate rows.
+- Same-identity corrections overwrite the prior stored value.
+- This is not an immutable observation-version history.
+- Upsert counts represent submitted rows, not exclusively newly inserted rows.
+
+filings:
+- Identity: accession number.
+- Upsert metadata, document URL, local path, and active-window status.
+
+company_industry_labels:
+- Accepted assignments replace the company's stored label set.
+- Classification may reuse labels tied to the same relevant 10-K accession.
+- Missing credentials, unusable text, or rejected classification results fall
+  back to existing or source-controlled labels.
+
+xbrl_concept_mappings:
+- Store governed mappings by concept, target metric, and scope.
+- Ingestion loads approved company, industry, and global mappings.
+- Company-specific mappings have precedence over broader scopes.
+- Normal ingestion does not automatically approve LLM recommendations.
+
+financial_metrics:
+- Identity includes company, metric, period, accession, and raw-fact ID.
+- Preserve source links to raw facts and filings.
+- Multiple observations for a metric-period can coexist.
+- Do not assume this table contains one canonical value per period.
+
+financial_indicators:
+- Identity includes company, indicator, period, and formula version.
+- Store calculated values or explicit skipped outcomes.
+- Preserve source metric IDs, raw-fact IDs, and accessions.
+- Old rows are deactivated before fresh results are upserted.
+- Older metrics can remain available as prior-period calculation inputs.
+
+6. ACTIVE WINDOW AND RETENTION
+
+Current limits:
+- Latest five annual fiscal periods.
+- Latest twelve quarterly fiscal periods.
+
+These limits apply to fiscal-period keys, not necessarily to exactly five
+annual documents or twelve quarterly documents.
+
+During normal refresh:
+- Retain raw facts.
+- Retain filing metadata.
+- Retain historical metric and indicator rows.
+- Update active-window status.
+- Eligible inactive downloaded filing documents may be deleted.
+
+Do not describe the active window as deletion of all older financial history.
+
+7. CONDITIONAL ARELLE ENRICHMENT
+
+Arelle enrichment is considered when canonical targets remain missing.
+
+Extraction is triggered when:
+- New selected filing accessions exist; or
+- No Inline XBRL source facts have yet been stored for the company.
+
+Process eligible active Inline filings, then upsert extracted facts and map again.
+
+The existing enrichment check is company-level. Do not assume there is a complete
+per-accession extraction-success or retry ledger.
+
+Dimensional facts must not automatically become consolidated totals.
+
+8. RETRIEVAL-INDEX SYNCHRONIZATION
+
+The separate entry point is:
+
+sync_company_retrieval_index(ticker, settings)
+
+Build a fingerprint from:
+- Active filing accessions.
+- Filing document hashes.
+- Parser version.
+- Splitter/chunk configuration.
+- Embedding model.
+
+If the fingerprint is unchanged and the existing generation is valid:
+    Reuse the generation.
+
+Otherwise:
+    Build new chunks and index artifacts.
+    Replace filing_chunks and retrieval_index_state in one transaction.
+    Clean up older generation artifacts after successful publication.
+
+If rebuilding fails before publication:
+    Preserve the previously stored complete generation.
+
+Do not assume financial ingestion automatically synchronizes retrieval.
+
+9. FAILURE AND CONSISTENCY BOUNDARIES
+
+- For a new company, SecIngestionError propagates because no local fallback exists.
+- For an existing company, that error returns the local-data fallback.
+- This does not imply that every possible exception is handled.
+- Financial repositories commit independently.
+- The overall financial ingestion is not one atomic company-level transaction.
+- Earlier writes can remain committed after a later failure.
+- Source facts absent from a subsequent response are not automatically deleted.
+- Metric upserts do not comprehensively retire rows that stop being emitted
+  after mapping changes.
+- Filing selection currently requests exact 10-K and 10-Q forms.
+- Do not assume amendment handling or exhaustive older-submissions traversal.
+- Schema initialization is additive, not an explicit versioned migration system.
+- Do not claim immutable evidence history, atomic financial snapshots, complete
+  incremental invalidation, or persisted LLM evidence packets without verifying
+  that those capabilities have been implemented.
+
+RESPONSE REQUIREMENTS
+
+When explaining or evaluating this mechanism:
+- Present the workflow in execution order, starting with company existence.
+- Distinguish SEC retrieval, database writes, recalculation, and index rebuilding.
+- Cite current code locations.
+- Explicitly identify differences between this baseline and the current checkout.
+- Label recommendations as proposed changes, not existing behavior.
+- Do not implement improvements without an explicit implementation request.

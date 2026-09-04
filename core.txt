@@ -1,0 +1,72 @@
+#Revenue, Gross Profit, Operating Income, Net Income, Cash, Total Assets, Total Liabilities, Equity, Debt, Operating Cash Flow, CapEx, Free Cash Flow, EPS, Shares Outstanding
+
+brain storm
+- after the initialization, are we going to need those evidence? if we don't need it then we don't need keep it in system. we should delete it after we formulate the evidence for LLM.
+	-- we should keep it for later usage, because I want to provide the extracted and formulated evidence at frontend, for people to download. 
+
+1. ingestion of SEC filings and inline XBRL(done)
+2. Arelle normalization(done) -> store the processed data, filings, generated supportive sections(E,D, C).
+	EVIDENCE	facts table			Selected dimension-free observations, including exact value, period, unit, concept, filing, validity and selection status
+	DIMENSIONAL 	facts table+ fact_dimensions	Each dimensional observation is a fact; its axis/member qualifiers belong in linked dimension rows
+	CALCULATION	calculation arcs		One row per parent–child relationship, with filing, role, arcrole and weight; group these into formulas during retrieval
+3. direct mapping, map the concepts with target system metrics.
+4. for the missing target system metrics, we ask the LLM to give recommendation from the provided 
+5. updating mechanism,
+6. front end. 
+- detailed 3-4(we are going to look for Revenue(Income Statement), Operating Income(Income Statement), Net Income(Income Statement), Total Assets(Balance Sheet), Total Liabilities(Balance Sheet), Equity(Balance Sheet), Operating Cash Flow(Cash Flow Statement) from the provided concepts of Arelle. base on the current structure we have, what will be the most efficient way to do the mapping. so that we can get each conventional financial matric of each year and quarter. we can first do predefined direct mapping method(key - value), and the mapping is provided in mapping.txt under this directory. 
+Since, different year might have different concepts are provided. therefore, we might have to do mapping for each metrices by each year. However, base on the structured data table presented in report, we can just look for each metrices from in concept table, then look for each value in each year/ quarter, if the some entry is zero, then just keep it as zero, for that year(or should we look for other candidate for that metrice in the concepts). after direct mapping, it is possible to have some metric can't be found through the keys provided from the mapping.txt then in this case there would be three cases would cause missing metrices.
+1. there is this company didn't use the provided keys to represent the matrices
+2. the company didn't provide the metrices intentionally, the just don't have it, then system ignore.
+so I am going to utilize LLM to differentiate those two cases and give recommendation on case 1. I want to provide LLM the evidence provided from the outcome of Arelle (as you can see in the report), so that LLM can make better judgement. we split the evidence that we get from Arelle(as you can see from the report in outcome) into different taxonomy by different year/quarter, and different statement and store it in a database(Mysql/Json) so that we provide different raw concepts/corresponding evidence material from Arelle from specific statement/specific year for each specific system metrics. one thing we should notice is that not all the provided evidence is useful for LLM to give recommendation it is case 1 or case2, and give recommendation. therefore, how we should decide which part of the evidence will be useful, then we are going to store it. then we formulate the evidence in a way that easy for LLM to make reference to ask LLM to make a recommendation. )
+
+to do
+- store the data we generated - there are three things we should preserve, filings, processed financial data from Arelle, and supportive material produced by Arelle. 
+- what part in each section(EVIDENCE, DIMENSIONAL FACT EVIDENCE, RECONCILIATION ISSUES  , CALCULATION RELATIONSHIPS) of the evidence is useful for LLM recommendation, should we use?
+- what should be storing and retrieving strategy?
+
+EVIDENCE, DIMENSIONAL FACT EVIDENCE, RECONCILIATION ISSUES  , CALCULATION RELATIONSHIPS
+
+EVIDENCE:
+[E001] dei:EntityListingParValuePerShare — Entity Listing Par Value Per Share
+Value: 0.00000625
+Period: 2021-07-01 to 2022-06-30
+Unit: iso4217:USD/xbrli:shares
+Decimals: INF
+Dimensions: none (consolidated)
+Arelle validity: valid
+Reconciliation: selected unique dimension-free annual fact
+Filing: 10-K filed 2022-07-28
+Accession: 0001564590-22-026876
+
+DIMENSIONAL FACT EVIDENCE:
+[D012] msft:EquityInterestPercentage — fiscal year 2024
+  Component 1: 0.10 xbrli:pure
+  Period: instant at 2024-06-30
+  Dimensions: dei:LegalEntityAxis=msft:ReprogrammedInterchangeLLCMember, srt:RangeAxis=srt:MaximumMember, us-gaap:RelatedPartyTransactionsByRelatedPartyAxis=msft:InflectionAiIncMember
+  Context: C_84e763f4-a70b-4a2c-bbfe-57aecb881b18
+  Component 2: 0.10 xbrli:pure
+  Period: instant at 2024-06-30
+  Dimensions: dei:LegalEntityAxis=msft:GreylockVenturesMember, srt:RangeAxis=srt:MaximumMember, us-gaap:RelatedPartyTransactionsByRelatedPartyAxis=msft:InflectionAiIncMember
+  Context: C_28c3c5a1-39d1-422e-88ab-f28b3d5e64bb
+
+RECONCILIATION ISSUES:
+[R001] us-gaap:CommercialPaper — fiscal year 2024
+Reason: conflicting dimension-free facts
+Candidate contexts: C_910b395a-5d62-4894-aa42-1da4086261cc, C_910b395a-5d62-4894-aa42-1da4086261cc
+Candidate: C_910b395a-5d62-4894-aa42-1da4086261cc: value=6693000000; unit=iso4217:USD; period=instant at 2024-06-30; decimals=-6
+Candidate: C_910b395a-5d62-4894-aa42-1da4086261cc: value=6700000000; unit=iso4217:USD; period=instant at 2024-06-30; decimals=-8
+Resolution: quarantined; no table value was selected.
+
+CALCULATION RELATIONSHIPS:
+Role: http://www.microsoft.com/20220630/taxonomy/role/DisclosureComponentsOfInventoriesDetail
+    us-gaap:InventoryNet = (1) us-gaap:InventoryFinishedGoodsNetOfReserves
+    us-gaap:InventoryNet = (1) us-gaap:InventoryRawMaterialsNetOfReserves
+    us-gaap:InventoryNet = (1) us-gaap:InventoryWorkInProcessNetOfReserves
+
+
+
+SEARCHING order -> metrics of certain year/period -> (period, company) -> accession_number -> evidence of concep> corresponding financial statements for that concepts.
+
+Mapping
+	- if there is a used concept existing for a company for the metric mapping, if there is a certain period that concept is missing we should retreat it as missing instead of looking for the alternative.
+	- we should remove alternative, we should only look at the initial primary concept, if we can't find the primary concept then we use LLM do to recommendation with the provided evidence. after we have an agreed upon recommendation for the specific company for that missing metrics, we add that recommendation as alternative concept.
