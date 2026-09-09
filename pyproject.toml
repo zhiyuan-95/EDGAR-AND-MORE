@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sec-inline-financials"
 version = "0.1.0"
-description = "CLI explorer for SEC Inline XBRL annual facts using Arelle"
+description = "Local SEC Inline XBRL evidence explorer backed by Arelle"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -43,5 +43,5 @@ strict = true
 packages = ["sec_inline_financials"]
 
 [[tool.mypy.overrides]]
-module = ["arelle", "arelle.*"]
+module = ["arelle", "arelle.*", "lxml", "lxml.*"]
 ignore_missing_imports = true

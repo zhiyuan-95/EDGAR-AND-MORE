@@ -18,15 +18,17 @@ alternatives, acceptance criteria, and open decisions.
 | --- | --- |
 | SEC discovery and Arelle report-period extraction | Implemented |
 | Annual and latest-12-filed-10-Q TXT reports with E/D/R evidence | Implemented |
-| Durable filing archive and relational evidence storage | Planned |
+| Durable filing-resource archive and relational evidence storage | Implemented; live acceptance pending |
 | Direct metric mapping using `mapping.txt` | Planned for seven metrics |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
 | Incremental refresh and historical result versions | Planned |
 | Frontend and evidence downloads | Planned |
 
-The current extractor uses in-memory result objects and local caches. It does
-not yet provide a database, a complete filing archive, a mapping engine, an LLM
-integration, or a frontend. The commands below run the existing CLI.
+The report command still uses its in-memory result objects and remains unchanged.
+The separate evidence-ingestion path now detaches every Arelle-exposed observation,
+stores linked evidence in SQLite, and retains loaded filing resources in an
+immutable content-addressed archive. Direct Mapping, LLM integration, updates,
+and the frontend remain later milestones. The commands below run the existing CLI.
 
 The existing report workflow is complete and remains explicitly invoked. The
 planned ingestion and update workflows will not generate reports automatically.
@@ -57,11 +59,11 @@ design.
   and pending-review states visible.
 - A Mapping Recommendation requires user approval before it becomes accepted.
 
-## Planned storage and evidence retention
+## Storage and evidence retention
 
-The proposal recommends **one SQLite evidence store plus retained file artifacts**
-for the local application. JSON/JSONL supplies model packets and downloads;
-MySQL is an alternative for a future shared deployment.
+The application uses **one SQLite evidence store plus retained file artifacts**.
+JSON/JSONL will supply later model packets and downloads. SQLite remains the
+structured source of truth for this local, single-user application.
 
 Preserve all three layers: original filings/resources, Arelle-processed financial
 observations, and supporting evidence. Store selected and dimensional observations
@@ -81,10 +83,14 @@ prompting, and refresh so the frontend can provide reproducible downloads. A TXT
 report is retained when the project owner explicitly generates one; report
 generation is separate from ingestion and updates.
 
-This requires richer extraction: the current report filters out observations
-outside its dates/duration windows, and conflict candidates are returned as text
-summaries. A complete observed-concept catalog, structured candidate lineage,
-presentation roles, and numeric-check records are planned additions.
+Evidence extraction occurs before the existing report filters. The store keeps
+the complete observed-concept catalog, all Arelle-exposed fact occurrences,
+structured conflict-candidate lineage, report roles, validation messages, and
+role-scoped calculation relationships. The report remains a derived presentation.
+
+See the [evidence-storage design](docs/designs/evidence-storage.md) and
+[storage runbook](docs/evidence_storage_runbook.md) for the implemented interface,
+runtime layout, audit, backup, and recovery procedures.
 
 ## Set up
 
@@ -244,15 +250,15 @@ $env:SEC10K_RUN_LIVE = "1"
 uv run --no-sync pytest tests/test_live_arelle.py -q
 ```
 
-The existing tests cover the extraction/reporting foundation. This live test
-does not verify quarterly discovery, storage, metric mapping, LLM recommendations,
-updates, or the frontend. Each planned phase has separate acceptance criteria in
-the [proposal](docs/project_proposal.txt).
+The existing live test covers the earlier report extraction path. It does not
+verify durable storage. The storage suite uses deterministic local fixtures; the
+design's real 10-K, real 10-Q, and complete 5/12-window storage acceptance runs
+remain opt-in and must not be claimed from the report-only live test.
 
 ## Next implementation step
 
-Persist one accession's original filing, structured facts, dimensions, conflict
-candidates, and calculation relationships, then reload them and compare the
-result with the existing report. Establish that round trip before adding direct
-mapping and LLM calls. Detailed mapping rules, model/provider choices, amendment
-handling, API contracts, and frontend screen design remain open decisions.
+Run the opt-in real-filing storage acceptance for one 10-K, one 10-Q, and then the
+selected 5/12 filing window. Once those evidence identities, artifact hashes, and
+restart audits are recorded, proceed to Milestone 2 Direct Mapping. Detailed
+mapping rules, model/provider choices, amendment handling, API contracts, and
+frontend screen design remain open decisions.

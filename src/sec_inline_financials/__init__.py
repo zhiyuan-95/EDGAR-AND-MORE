@@ -1,1 +1,1 @@
-"""SEC Inline XBRL financial report generator."""
+"""Local SEC Inline XBRL evidence explorer and report generator."""
