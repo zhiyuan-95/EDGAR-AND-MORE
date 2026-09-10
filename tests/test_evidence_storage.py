@@ -327,7 +327,7 @@ def test_snapshot_round_trip_preserves_all_observations_and_report_decisions(
     assert roles["assets-nil"] == roles["entity-name"] == "excluded"
 
     store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "runtime")
-    assert store.initialize() == store.initialize() == 1
+    assert store.initialize() == store.initialize() == 2
     run = store.create_processing_run(bundle.company, purpose="test", requested_window={})
     attempt = store.begin_filing_attempt(run, bundle.company, bundle.filing)
     result = store.save_snapshot(

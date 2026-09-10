@@ -9,8 +9,8 @@ The direction in [core.txt](core.txt) extends that foundation with retained
 filings and structured evidence, mapping for seven financial metrics, LLM
 recommendations for unresolved metrics, incremental updates, and a local
 frontend with evidence downloads and mapping review.
-See the [project proposal](docs/project_proposal.txt) for the proposed design,
-alternatives, acceptance criteria, and open decisions.
+See the [project proposal](docs/designs/project_proposal.txt) for the proposed
+design, alternatives, acceptance criteria, and open decisions.
 
 ## Current status
 
@@ -21,17 +21,18 @@ alternatives, acceptance criteria, and open decisions.
 | Durable filing-resource archive and relational evidence storage | Implemented; live acceptance pending |
 | Direct metric mapping using `mapping.txt` | Planned for seven metrics |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
-| Incremental refresh and historical result versions | Planned |
+| On-demand filing refresh and historical evidence retention | Implemented; live acceptance pending |
 | Frontend and evidence downloads | Planned |
 
 The report command still uses its in-memory result objects and remains unchanged.
 The separate evidence-ingestion path now detaches every Arelle-exposed observation,
 stores linked evidence in SQLite, and retains loaded filing resources in an
-immutable content-addressed archive. Direct Mapping, LLM integration, updates,
-and the frontend remain later milestones. The commands below run the existing CLI.
+immutable content-addressed archive. Direct Mapping, LLM integration, and the
+frontend remain later milestones. On-demand filing-window updates are implemented;
+mapping-result invalidation waits for the mapping milestone.
 
 The existing report workflow is complete and remains explicitly invoked. The
-planned ingestion and update workflows will not generate reports automatically.
+ingestion and update workflows do not generate reports automatically.
 
 ## Planned metric workflow
 
@@ -135,6 +136,25 @@ are ignored. Other API keys in these files are neither loaded nor modified by
 this application.
 
 ## Run
+
+Ingest or update the retained five-annual/twelve-quarter evidence window:
+
+```powershell
+uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
+```
+
+After refreshing the editable install with `uv sync`, the equivalent packaged
+command is `uv run --no-sync sec-inline-financials-ingest AAPL`.
+
+The first successful call returns `initialized`. Later calls use the stored
+next-check dates and return `reused_local` without SEC access until an annual or
+quarterly check is due. A due no-change check returns `checked_no_update`; a new
+selected accession returns `updated`. Use `--force` for an explicit SEC metadata
+check. If an SEC refresh fails for a company with stored evidence, the command
+returns `refresh_failed_using_local_data` and leaves the published local window
+unchanged.
+
+Generate the separate annual and quarterly TXT inspection reports:
 
 ```powershell
 uv run --no-sync sec-inline-financials

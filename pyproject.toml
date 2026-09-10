@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 sec-inline-financials = "sec_inline_financials.cli:main"
+sec-inline-financials-ingest = "sec_inline_financials.company_ingestion:main"
 
 [dependency-groups]
 dev = [

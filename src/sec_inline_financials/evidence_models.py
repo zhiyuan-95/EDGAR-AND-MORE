@@ -363,3 +363,20 @@ class RunOutcome:
     run_id: int
     status: Literal["succeeded", "partial", "failed"]
     filings: tuple[FilingOutcome, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class StoredCompanyState:
+    company: Company
+    latest_10k_filing_date: date | None
+    latest_10q_filing_date: date | None
+    next_check_date_10k: date | None
+    next_check_date_10q: date | None
+    snapshot_count: int
+    known_accessions: tuple[str, ...] = ()
+    active_accessions: tuple[str, ...] = ()
+    active_filings_without_evidence: tuple[str, ...] = ()
+
+    @property
+    def has_evidence(self) -> bool:
+        return self.snapshot_count > 0

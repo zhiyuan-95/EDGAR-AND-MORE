@@ -10,6 +10,10 @@ class ProcessingError(ExplorerError):
     """Arelle could not produce a usable annual result."""
 
 
+class IngestionError(ExplorerError):
+    """A company ingestion could not publish any usable filing evidence."""
+
+
 class EvidenceStorageError(ExplorerError):
     """Base class for durable evidence storage failures."""
 

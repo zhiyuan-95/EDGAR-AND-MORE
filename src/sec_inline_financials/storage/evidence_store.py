@@ -33,6 +33,7 @@ from sec_inline_financials.evidence_models import (
     ReportEvaluationRef,
     SnapshotRef,
     SourceDocumentRecord,
+    StoredCompanyState,
     StoreResult,
     UnitMeasureRecord,
     UnitRecord,
@@ -81,6 +82,142 @@ class EvidenceStore:
 
     def initialize(self) -> int:
         return initialize_database(self.database)
+
+    def get_company_state(self, ticker: str) -> StoredCompanyState | None:
+        """Return the locally known refresh state without contacting the SEC."""
+        requested = ticker.strip().upper()
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT id, cik, ticker, current_name, latest_10k_filing_date, "
+                "latest_10q_filing_date, next_check_date_10k, next_check_date_10q, "
+                "(SELECT count(*) FROM evidence_snapshots AS s "
+                " JOIN filings AS f ON f.id = s.filing_id WHERE f.company_id = c.id) "
+                "AS snapshot_count "
+                "FROM companies AS c WHERE upper(ticker) = ?",
+                (requested,),
+            ).fetchone()
+            if row is None:
+                return None
+            company_id = int(row["id"])
+            known_accessions = tuple(
+                str(item["accession"])
+                for item in connection.execute(
+                    "SELECT accession FROM filings WHERE company_id = ? ORDER BY accession",
+                    (company_id,),
+                )
+            )
+            active_accessions = tuple(
+                str(item["accession"])
+                for item in connection.execute(
+                    "SELECT accession FROM filings WHERE company_id = ? AND is_active = 1 "
+                    "ORDER BY CASE form WHEN '10-K' THEN 0 ELSE 1 END, "
+                    "active_window_rank, accession",
+                    (company_id,),
+                )
+            )
+            missing_evidence = tuple(
+                str(item["accession"])
+                for item in connection.execute(
+                    "SELECT f.accession FROM filings AS f "
+                    "WHERE f.company_id = ? AND f.is_active = 1 "
+                    "AND NOT EXISTS ("
+                    " SELECT 1 FROM evidence_snapshots AS s WHERE s.filing_id = f.id"
+                    ") ORDER BY CASE f.form WHEN '10-K' THEN 0 ELSE 1 END, "
+                    "f.active_window_rank, f.accession",
+                    (company_id,),
+                )
+            )
+            return StoredCompanyState(
+                company=Company(
+                    ticker=str(row["ticker"] or requested),
+                    cik=str(row["cik"]),
+                    name=str(row["current_name"]),
+                ),
+                latest_10k_filing_date=_optional_date(row["latest_10k_filing_date"]),
+                latest_10q_filing_date=_optional_date(row["latest_10q_filing_date"]),
+                next_check_date_10k=_optional_date(row["next_check_date_10k"]),
+                next_check_date_10q=_optional_date(row["next_check_date_10q"]),
+                snapshot_count=int(row["snapshot_count"]),
+                known_accessions=known_accessions,
+                active_accessions=active_accessions,
+                active_filings_without_evidence=missing_evidence,
+            )
+
+    def get_company_state_by_cik(self, cik: str) -> StoredCompanyState | None:
+        """Resolve prior state when an SEC ticker symbol has changed."""
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT ticker FROM companies WHERE cik = ?", (cik,)
+            ).fetchone()
+        if row is None or row["ticker"] is None:
+            return None
+        return self.get_company_state(str(row["ticker"]))
+
+    def publish_filing_window(
+        self,
+        company: Company,
+        *,
+        annual: list[Filing],
+        quarterly: list[Filing],
+        next_check_date_10k: date,
+        next_check_date_10q: date,
+    ) -> None:
+        """Atomically publish SEC refresh metadata and the selected filing window."""
+        if any(filing.form != "10-K" for filing in annual):
+            raise FilingMetadataError("Annual filing windows may contain only exact-form 10-Ks.")
+        if any(filing.form != "10-Q" for filing in quarterly):
+            raise FilingMetadataError("Quarterly filing windows may contain only exact-form 10-Qs.")
+        accessions = [filing.accession for filing in (*annual, *quarterly)]
+        if len(accessions) != len(set(accessions)):
+            raise FilingMetadataError("A filing window may not contain duplicate accessions.")
+        if not annual or not quarterly:
+            raise FilingMetadataError("A filing window requires annual and quarterly filings.")
+
+        with self.database.write_transaction() as connection:
+            company_id = self._upsert_company(connection, company)
+            filing_ids = {
+                filing.accession: self._upsert_filing(connection, company_id, filing)
+                for filing in (*annual, *quarterly)
+            }
+            connection.execute(
+                "UPDATE filings SET is_active = 0, active_window_rank = NULL WHERE company_id = ?",
+                (company_id,),
+            )
+            for rank, filing in enumerate(annual, start=1):
+                connection.execute(
+                    "UPDATE filings SET is_active = 1, active_window_rank = ? WHERE id = ?",
+                    (rank, filing_ids[filing.accession]),
+                )
+            for rank, filing in enumerate(quarterly, start=1):
+                connection.execute(
+                    "UPDATE filings SET is_active = 1, active_window_rank = ? WHERE id = ?",
+                    (rank, filing_ids[filing.accession]),
+                )
+            connection.execute(
+                "UPDATE companies SET latest_10k_filing_date = ?, "
+                "latest_10q_filing_date = ?, next_check_date_10k = ?, "
+                "next_check_date_10q = ?, updated_at = ? WHERE id = ?",
+                (
+                    max(filing.filing_date for filing in annual).isoformat(),
+                    max(filing.filing_date for filing in quarterly).isoformat(),
+                    next_check_date_10k.isoformat(),
+                    next_check_date_10q.isoformat(),
+                    _now(),
+                    company_id,
+                ),
+            )
+
+    def fiscal_period_for_accession(self, accession: str) -> str | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT s.fiscal_period FROM evidence_snapshots AS s "
+                "JOIN filings AS f ON f.id = s.filing_id "
+                "WHERE f.accession = ? ORDER BY s.id DESC LIMIT 1",
+                (accession,),
+            ).fetchone()
+            if row is None or row["fiscal_period"] is None:
+                return None
+            return str(row["fiscal_period"])
 
     def create_processing_run(
         self,
@@ -710,6 +847,13 @@ class EvidenceStore:
     @staticmethod
     def _upsert_company(connection: sqlite3.Connection, company: Company) -> int:
         now = _now()
+        ticker_owner = connection.execute(
+            "SELECT cik FROM companies WHERE upper(ticker) = upper(?)", (company.ticker,)
+        ).fetchone()
+        if ticker_owner is not None and str(ticker_owner["cik"]) != company.cik:
+            raise FilingMetadataError(
+                f"Ticker {company.ticker} is already associated with another SEC CIK."
+            )
         row = connection.execute(
             "SELECT id FROM companies WHERE cik = ?", (company.cik,)
         ).fetchone()
