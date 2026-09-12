@@ -40,6 +40,23 @@ class SourceDocumentRecord:
 
 
 @dataclass(frozen=True)
+class FilingSectionRecord:
+    section_key: str
+    section_order: int
+    item: str
+    title: str
+    extraction_status: Literal["extracted", "not_found", "parse_error"]
+    source_document_key: str
+    part: str | None = None
+    heading_text: str | None = None
+    source_locator_start: str | None = None
+    source_locator_end: str | None = None
+    content_text: str | None = None
+    content_sha256: str | None = None
+    diagnostic: str | None = None
+
+
+@dataclass(frozen=True)
 class ConceptRecord:
     key: str
     namespace_uri: str
@@ -234,6 +251,8 @@ class CoverageManifest:
     validation_message_count: int
     calculation_relationship_count: int
     source_document_count: int
+    filing_section_count: int = 0
+    extracted_filing_section_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -270,6 +289,7 @@ class FilingEvidenceBundle:
     extraction_profile: ExtractionProfile
     coverage_manifest: CoverageManifest
     raw_log_json: str
+    filing_sections: tuple[FilingSectionRecord, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -376,6 +396,7 @@ class StoredCompanyState:
     known_accessions: tuple[str, ...] = ()
     active_accessions: tuple[str, ...] = ()
     active_filings_without_evidence: tuple[str, ...] = ()
+    active_filings_without_sections: tuple[str, ...] = ()
 
     @property
     def has_evidence(self) -> bool:

@@ -25,6 +25,7 @@ from sec_inline_financials.evidence_models import (
     FactQuery,
     FactReportStatus,
     FilingEvidenceBundle,
+    FilingSectionRecord,
     InstalledArtifact,
     ObservationRecord,
     Page,
@@ -48,6 +49,7 @@ from sec_inline_financials.storage.fingerprints import (
     extraction_profile_hash,
     extraction_profile_json,
     payload_hash,
+    sha256_text,
     source_manifest_hash,
 )
 from sec_inline_financials.storage.migrations import initialize_database
@@ -127,6 +129,20 @@ class EvidenceStore:
                     (company_id,),
                 )
             )
+            missing_sections = tuple(
+                str(item["accession"])
+                for item in connection.execute(
+                    "SELECT f.accession FROM filings AS f "
+                    "WHERE f.company_id = ? AND f.is_active = 1 "
+                    "AND NOT EXISTS ("
+                    " SELECT 1 FROM evidence_snapshots AS s "
+                    " JOIN filing_sections AS fs ON fs.snapshot_id = s.id "
+                    " WHERE s.filing_id = f.id"
+                    ") ORDER BY CASE f.form WHEN '10-K' THEN 0 ELSE 1 END, "
+                    "f.active_window_rank, f.accession",
+                    (company_id,),
+                )
+            )
             return StoredCompanyState(
                 company=Company(
                     ticker=str(row["ticker"] or requested),
@@ -141,6 +157,7 @@ class EvidenceStore:
                 known_accessions=known_accessions,
                 active_accessions=active_accessions,
                 active_filings_without_evidence=missing_evidence,
+                active_filings_without_sections=missing_sections,
             )
 
     def get_company_state_by_cik(self, cik: str) -> StoredCompanyState | None:
@@ -488,6 +505,7 @@ class EvidenceStore:
             if snapshot is None:
                 raise KeyError(f"Unknown evidence snapshot {snapshot_id}.")
             source_documents = self._load_source_documents(connection, snapshot_id)
+            filing_sections = self._load_filing_sections(connection, snapshot_id)
             concepts, labels = self._load_concepts(connection, snapshot_id)
             contexts = self._load_contexts(connection, snapshot_id)
             units = self._load_units(connection, snapshot_id)
@@ -559,10 +577,13 @@ class EvidenceStore:
                         (str(item[0]), str(item[1]))
                         for item in profile_data["transform_plugin_hashes"]
                     ),
-                    serialization_version=str(profile_data["serialization_version"]),
+                    serialization_version=str(
+                        profile_data.get("serialization_version", "evidence-v1")
+                    ),
                 ),
                 coverage_manifest=CoverageManifest(**coverage_data),
                 raw_log_json=raw_log,
+                filing_sections=filing_sections,
             )
 
     def get_report_evaluation(
@@ -624,6 +645,22 @@ class EvidenceStore:
                 (snapshot_id, cursor, limit + 1),
             ).fetchall()
             return self._page(rows, limit)
+
+    def list_filing_sections(self, snapshot_id: int) -> tuple[dict[str, object], ...]:
+        with self.database.connection() as connection:
+            return tuple(
+                dict(row)
+                for row in connection.execute(
+                    "SELECT fs.id, fs.section_key, fs.section_order, fs.part, fs.item, "
+                    "fs.title, fs.extraction_status, fs.heading_text, "
+                    "fs.source_locator_start, fs.source_locator_end, fs.content_text, "
+                    "fs.content_sha256, fs.diagnostic, sd.document_key, sd.original_uri "
+                    "FROM filing_sections AS fs JOIN source_documents AS sd "
+                    "ON sd.snapshot_id = fs.snapshot_id AND sd.id = fs.source_document_id "
+                    "WHERE fs.snapshot_id = ? ORDER BY fs.section_order",
+                    (snapshot_id,),
+                )
+            )
 
     def list_facts(
         self,
@@ -779,6 +816,7 @@ class EvidenceStore:
                 )
                 for table in (
                     "source_documents",
+                    "filing_sections",
                     "snapshot_concepts",
                     "contexts",
                     "units",
@@ -843,6 +881,38 @@ class EvidenceStore:
         )
         if expected != len(bundle.observations):
             raise ValueError("Coverage manifest does not match detached observations.")
+        section_keys = [section.section_key for section in bundle.filing_sections]
+        if len(section_keys) != len(set(section_keys)):
+            raise ValueError("Filing section keys must be unique within a snapshot.")
+        section_orders = [section.section_order for section in bundle.filing_sections]
+        if len(section_orders) != len(set(section_orders)):
+            raise ValueError("Filing section orders must be unique within a snapshot.")
+        document_keys = {document.key for document in bundle.source_documents}
+        for section in bundle.filing_sections:
+            if section.source_document_key not in document_keys:
+                raise ValueError(
+                    f"Filing section {section.section_key} references an unknown source document."
+                )
+            if section.extraction_status == "extracted":
+                if not section.content_text or not section.source_locator_start:
+                    raise ValueError(
+                        f"Extracted filing section {section.section_key} has no content or locator."
+                    )
+                if section.content_sha256 != sha256_text(section.content_text):
+                    raise ValueError(
+                        f"Filing section {section.section_key} content hash does not match."
+                    )
+            elif section.content_text is not None or section.content_sha256 is not None:
+                raise ValueError(
+                    f"Unavailable filing section {section.section_key} cannot contain text."
+                )
+        if bundle.coverage_manifest.filing_section_count != len(bundle.filing_sections):
+            raise ValueError("Coverage manifest does not match filing sections.")
+        extracted_section_count = sum(
+            section.extraction_status == "extracted" for section in bundle.filing_sections
+        )
+        if bundle.coverage_manifest.extracted_filing_section_count != extracted_section_count:
+            raise ValueError("Coverage manifest does not match extracted filing sections.")
 
     @staticmethod
     def _upsert_company(connection: sqlite3.Connection, company: Company) -> int:
@@ -1010,6 +1080,36 @@ class EvidenceStore:
                 ),
             )
             document_ids[document.key] = _last_row_id(cursor)
+
+        for section in bundle.filing_sections:
+            source_document_id = document_ids.get(section.source_document_key)
+            if source_document_id is None:
+                raise ValueError(
+                    f"Filing section {section.section_key} references an unknown source document."
+                )
+            connection.execute(
+                "INSERT INTO filing_sections("
+                "snapshot_id, section_key, section_order, part, item, title, "
+                "extraction_status, source_document_id, heading_text, source_locator_start, "
+                "source_locator_end, content_text, content_sha256, diagnostic"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    snapshot_id,
+                    section.section_key,
+                    section.section_order,
+                    section.part,
+                    section.item,
+                    section.title,
+                    section.extraction_status,
+                    source_document_id,
+                    section.heading_text,
+                    section.source_locator_start,
+                    section.source_locator_end,
+                    section.content_text,
+                    section.content_sha256,
+                    section.diagnostic,
+                ),
+            )
 
         concept_ids: dict[str, int] = {}
         for concept in bundle.concepts:
@@ -1464,6 +1564,53 @@ class EvidenceStore:
                 "SELECT sd.*, a.relative_object_path, a.byte_size, a.media_type "
                 "FROM source_documents AS sd LEFT JOIN artifacts AS a ON a.id = sd.artifact_id "
                 "WHERE sd.snapshot_id = ? ORDER BY sd.id",
+                (snapshot_id,),
+            )
+        )
+
+    @staticmethod
+    def _load_filing_sections(
+        connection: sqlite3.Connection, snapshot_id: int
+    ) -> tuple[FilingSectionRecord, ...]:
+        document_keys = {
+            int(row["id"]): str(row["document_key"])
+            for row in connection.execute(
+                "SELECT id, document_key FROM source_documents WHERE snapshot_id = ?",
+                (snapshot_id,),
+            )
+        }
+        return tuple(
+            FilingSectionRecord(
+                section_key=str(row["section_key"]),
+                section_order=int(row["section_order"]),
+                part=(str(row["part"]) if row["part"] is not None else None),
+                item=str(row["item"]),
+                title=str(row["title"]),
+                extraction_status=str(row["extraction_status"]),  # type: ignore[arg-type]
+                source_document_key=document_keys[int(row["source_document_id"])],
+                heading_text=(
+                    str(row["heading_text"]) if row["heading_text"] is not None else None
+                ),
+                source_locator_start=(
+                    str(row["source_locator_start"])
+                    if row["source_locator_start"] is not None
+                    else None
+                ),
+                source_locator_end=(
+                    str(row["source_locator_end"])
+                    if row["source_locator_end"] is not None
+                    else None
+                ),
+                content_text=(
+                    str(row["content_text"]) if row["content_text"] is not None else None
+                ),
+                content_sha256=(
+                    str(row["content_sha256"]) if row["content_sha256"] is not None else None
+                ),
+                diagnostic=(str(row["diagnostic"]) if row["diagnostic"] is not None else None),
+            )
+            for row in connection.execute(
+                "SELECT * FROM filing_sections WHERE snapshot_id = ? ORDER BY section_order",
                 (snapshot_id,),
             )
         )

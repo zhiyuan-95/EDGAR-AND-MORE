@@ -57,8 +57,9 @@ and earlier completed filings remain usable.
 ## Retrieval and integrity
 
 All retrieval starts from an explicit snapshot ID. Use `list_concepts`,
-`list_facts`, `get_fact`, `get_conflict`, `list_calculation_children`, and
-`list_validation_messages` for bounded queries. Use `load_snapshot` only for full
+`list_filing_sections`, `list_facts`, `get_fact`, `get_conflict`,
+`list_calculation_children`, and `list_validation_messages` for bounded queries.
+Use `load_snapshot` only for full
 round-trip or replay work.
 
 `audit_snapshot` checks linked row counts, every referenced artifact's SHA-256 and

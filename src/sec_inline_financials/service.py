@@ -120,9 +120,9 @@ def generate_report(ticker: str, years: int, output_dir: Path) -> Path:
     return _configured_application(output_dir).create_report(ticker, years, output_dir)
 
 
-def generate_reports(ticker: str, years: int, output_dir: Path) -> tuple[Path, Path]:
+def generate_reports(ticker: str, output_dir: Path) -> tuple[Path, Path]:
     return _configured_application(output_dir).create_reports(
-        ticker, years=years, quarters=12, output_dir=output_dir
+        ticker, years=5, quarters=12, output_dir=output_dir
     )
 
 

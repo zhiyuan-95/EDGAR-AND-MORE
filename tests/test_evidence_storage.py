@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from sec_inline_financials.evidence_models import (
     CoverageManifest,
     ExtractionProfile,
     FilingEvidenceBundle,
+    FilingSectionRecord,
     ObservationRecord,
     SourceDocumentRecord,
     UnitMeasureRecord,
@@ -26,8 +28,14 @@ from sec_inline_financials.evidence_models import (
     ValidationRecord,
 )
 from sec_inline_financials.models import Company, Filing
+from sec_inline_financials.storage import migrations
+from sec_inline_financials.storage.database import EvidenceDatabase
 from sec_inline_financials.storage.evidence_store import EvidenceStore
-from sec_inline_financials.storage.fingerprints import payload_hash, source_manifest_json
+from sec_inline_financials.storage.fingerprints import (
+    payload_hash,
+    payload_json,
+    source_manifest_json,
+)
 from sec_inline_financials.storage.recovery import (
     audit_backup,
     backup_evidence,
@@ -201,6 +209,7 @@ def _bundle(tmp_path: Path) -> FilingEvidenceBundle:
             (ENTITY_NAME, "dei:EntityRegistrantName", False),
         )
     )
+    section_text = "Item 1. Business\n\nWe manufacture test widgets."
     return FilingEvidenceBundle(
         company=company,
         filing=filing,
@@ -261,11 +270,12 @@ def _bundle(tmp_path: Path) -> FilingEvidenceBundle:
         ),
         extraction_profile=ExtractionProfile(
             application_version="0.1.0",
-            extractor_version="evidence-extractor-v1",
+            extractor_version="evidence-extractor-v2",
             arelle_version="2.41.7",
             validation_options=(("validate", "true"),),
             transform_plugin_revision="fixture",
             transform_plugin_hashes=(("plugin.py", "4" * 64),),
+            serialization_version="evidence-v2",
         ),
         coverage_manifest=CoverageManifest(
             recognized_fact_count=7,
@@ -279,8 +289,25 @@ def _bundle(tmp_path: Path) -> FilingEvidenceBundle:
             validation_message_count=1,
             calculation_relationship_count=1,
             source_document_count=1,
+            filing_section_count=1,
+            extracted_filing_section_count=1,
         ),
         raw_log_json='{"log":[{"code":"calc:inconsistency"}]}',
+        filing_sections=(
+            FilingSectionRecord(
+                section_key="item_1",
+                section_order=0,
+                item="1",
+                title="Business",
+                extraction_status="extracted",
+                source_document_key="primary",
+                heading_text="Item 1. Business",
+                source_locator_start="/html/body/h1[1]",
+                source_locator_end="/html/body/h1[2]",
+                content_text=section_text,
+                content_sha256=hashlib.sha256(section_text.encode()).hexdigest(),
+            ),
+        ),
     )
 
 
@@ -327,7 +354,7 @@ def test_snapshot_round_trip_preserves_all_observations_and_report_decisions(
     assert roles["assets-nil"] == roles["entity-name"] == "excluded"
 
     store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "runtime")
-    assert store.initialize() == store.initialize() == 2
+    assert store.initialize() == store.initialize() == 3
     run = store.create_processing_run(bundle.company, purpose="test", requested_window={})
     attempt = store.begin_filing_attempt(run, bundle.company, bundle.filing)
     result = store.save_snapshot(
@@ -343,6 +370,11 @@ def test_snapshot_round_trip_preserves_all_observations_and_report_decisions(
     assert payload_hash(reloaded) == payload_hash(bundle)
     assert reloaded_evaluation == evaluation
     assert len(store.list_facts(result.snapshot_id).items) == 7
+    assert reloaded.filing_sections == bundle.filing_sections
+    listed_sections = store.list_filing_sections(result.snapshot_id)
+    assert listed_sections[0]["section_key"] == "item_1"
+    assert listed_sections[0]["content_text"] == bundle.filing_sections[0].content_text
+    assert store.audit_snapshot(result.snapshot_id)["counts"]["filing_sections"] == 1  # type: ignore[index]
     assert store.audit_snapshot(result.snapshot_id)["ok"] is True
 
     projected = project_report(reloaded, reloaded_evaluation)
@@ -362,6 +394,32 @@ def test_snapshot_round_trip_preserves_all_observations_and_report_decisions(
     assert reused.disposition == "reused"
     with store.database.connection() as connection:
         assert connection.execute("SELECT count(*) FROM facts").fetchone()[0] == 7
+
+
+def test_v1_payload_shape_remains_compatible_after_section_storage_is_added(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    legacy = replace(
+        bundle,
+        extraction_profile=replace(
+            bundle.extraction_profile,
+            extractor_version="evidence-extractor-v1",
+            serialization_version="evidence-v1",
+        ),
+        coverage_manifest=replace(
+            bundle.coverage_manifest,
+            filing_section_count=0,
+            extracted_filing_section_count=0,
+        ),
+        filing_sections=(),
+    )
+
+    payload = payload_json(legacy)
+
+    assert '"version":"evidence-payload-v1"' in payload
+    assert '"filing_sections"' not in payload
+    assert '"filing_section_count"' not in payload
 
 
 def test_failure_during_snapshot_insert_rolls_back_every_evidence_row(
@@ -402,6 +460,31 @@ def test_modified_migration_and_corrupt_artifact_fail_explicitly(tmp_path: Path)
     object_path.write_bytes(b"corrupt")
     with pytest.raises(ArtifactHashMismatchError):
         store.artifacts.resolve(artifact.relative_object_path, artifact.sha256, artifact.byte_size)
+
+
+def test_migration_checksum_ignores_platform_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    migration_directory = tmp_path / "migrations"
+    migration_directory.mkdir()
+    migration_path = migration_directory / "0001_fixture.sql"
+    lf_sql = (
+        "CREATE TABLE schema_migrations (\n"
+        "    version INTEGER PRIMARY KEY,\n"
+        "    filename TEXT NOT NULL,\n"
+        "    checksum TEXT NOT NULL,\n"
+        "    applied_at TEXT NOT NULL\n"
+        ");\n"
+        "CREATE TABLE fixture (id INTEGER PRIMARY KEY);\n"
+    )
+    migration_path.write_bytes(lf_sql.encode("utf-8"))
+    monkeypatch.setattr(migrations.resources, "files", lambda _package: migration_directory)
+    database = EvidenceDatabase(tmp_path / "line-endings.sqlite3")
+
+    assert migrations.initialize_database(database) == 1
+    migration_path.write_bytes(lf_sql.replace("\n", "\r\n").encode("utf-8"))
+
+    assert migrations.initialize_database(database) == 1
 
 
 def test_database_enforces_snapshot_scoped_fact_links(tmp_path: Path) -> None:

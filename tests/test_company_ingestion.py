@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from sec_inline_financials.company_ingestion import (
     _next_market_day,
     _previous_market_day,
 )
+from sec_inline_financials.company_ingestion import main as run_company_ingestion
 from sec_inline_financials.errors import DiscoveryError, IngestionError
 from sec_inline_financials.evidence_models import (
     CoverageManifest,
@@ -19,6 +21,7 @@ from sec_inline_financials.evidence_models import (
     FilingEvidenceBundle,
     SourceDocumentRecord,
 )
+from sec_inline_financials.filing_sections import extract_filing_sections
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
@@ -51,6 +54,11 @@ def _empty_bundle(
     source_bytes = f"<html>{filing.accession}</html>".encode()
     source_path = tmp_path / f"{filing.accession}.htm"
     source_path.write_bytes(source_bytes)
+    sections = extract_filing_sections(
+        source_bytes,
+        form=filing.form,
+        source_document_key="primary",
+    )
     return FilingEvidenceBundle(
         company=company,
         filing=filing,
@@ -88,6 +96,7 @@ def _empty_bundle(
             validation_options=(),
             transform_plugin_revision="fixture",
             transform_plugin_hashes=(),
+            serialization_version="evidence-v2",
         ),
         coverage_manifest=CoverageManifest(
             recognized_fact_count=0,
@@ -101,8 +110,11 @@ def _empty_bundle(
             validation_message_count=0,
             calculation_relationship_count=0,
             source_document_count=1,
+            filing_section_count=len(sections),
+            extracted_filing_section_count=0,
         ),
         raw_log_json='{"log":[]}',
+        filing_sections=sections,
     )
 
 
@@ -203,6 +215,7 @@ def test_initial_ingestion_publishes_refresh_state_and_local_access_skips_sec(
     assert state.next_check_date_10q == date(2026, 5, 1)
     assert state.active_accessions == (annual.accession, quarterly.accession)
     assert state.active_filings_without_evidence == ()
+    assert state.active_filings_without_sections == ()
 
     local = CompanyIngestionService(
         store=store,
@@ -214,6 +227,80 @@ def test_initial_ingestion_publishes_refresh_state_and_local_access_skips_sec(
     assert local.status == "reused_local"
     assert local.checked_sec is False
     assert local.run is None
+
+
+def test_legacy_active_snapshots_trigger_section_backfill(tmp_path: Path) -> None:
+    store, _company, _annual, _quarterly, gateway, processor = _fixture_services(tmp_path)
+    current_bundles = dict(processor.bundles)
+    processor.bundles = {
+        accession: replace(
+            bundle,
+            extraction_profile=replace(
+                bundle.extraction_profile,
+                extractor_version="evidence-extractor-v1",
+                serialization_version="evidence-v1",
+            ),
+            coverage_manifest=replace(
+                bundle.coverage_manifest,
+                filing_section_count=0,
+                extracted_filing_section_count=0,
+            ),
+            filing_sections=(),
+        )
+        for accession, bundle in current_bundles.items()
+    }
+    CompanyIngestionService(
+        store=store,
+        sec_gateway_factory=lambda: gateway,
+        processor_factory=lambda: processor,
+        today_fn=lambda: date(2026, 1, 5),
+    ).ingest_company("TEST", annual_count=1, quarterly_count=1)
+    legacy_state = store.get_company_state("TEST")
+    assert legacy_state is not None
+    assert set(legacy_state.active_filings_without_sections) == set(legacy_state.active_accessions)
+
+    processor.bundles = current_bundles
+    result = CompanyIngestionService(
+        store=store,
+        sec_gateway_factory=lambda: gateway,
+        processor_factory=lambda: processor,
+        today_fn=lambda: date(2026, 1, 6),
+    ).ingest_company("TEST", annual_count=1, quarterly_count=1)
+
+    assert result.status == "checked_no_update"
+    assert result.checked_sec is True
+    refreshed_state = store.get_company_state("TEST")
+    assert refreshed_state is not None
+    assert refreshed_state.active_filings_without_sections == ()
+
+
+def test_initial_ingestion_reports_discovery_and_filing_progress(tmp_path: Path) -> None:
+    store, _company, annual, quarterly, gateway, processor = _fixture_services(tmp_path)
+    progress: list[str] = []
+    service = CompanyIngestionService(
+        store=store,
+        sec_gateway_factory=lambda: gateway,
+        processor_factory=lambda: processor,
+        today_fn=lambda: date(2026, 1, 5),
+        progress=progress.append,
+    )
+
+    result = service.ingest_company("TEST", annual_count=1, quarterly_count=1)
+
+    assert result.status == "initialized"
+    assert progress == [
+        "Initializing evidence storage for TEST...",
+        "Checking stored refresh state for TEST...",
+        "Checking SEC filings for TEST...",
+        "Selected filings for TEST: 1 annual, 1 quarterly.",
+        "Processing selected filings for TEST: 2 total.",
+        f"[1/2] Processing 10-Q {quarterly.accession}...",
+        f"[1/2] Finished 10-Q {quarterly.accession}: stored.",
+        f"[2/2] Processing 10-K {annual.accession}...",
+        f"[2/2] Finished 10-K {annual.accession}: stored.",
+        "Publishing the active filing window for TEST...",
+        "Completed ingestion for TEST: initialized.",
+    ]
 
 
 def test_due_check_without_new_accession_reuses_snapshots_and_advances_due_form(
@@ -356,3 +443,59 @@ def test_initial_all_filing_failures_raise_ingestion_error(tmp_path: Path) -> No
 
     with pytest.raises(IngestionError, match="no usable filing evidence"):
         service.ingest_company("TEST", annual_count=1, quarterly_count=1)
+
+
+def test_cli_writes_progress_to_stderr_and_result_to_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    today = date.today()
+    company = Company(ticker="TEST", cik="0000000123", name="Test Company")
+    annual = _filing(
+        "0000000123-26-000010",
+        form="10-K",
+        filing_date=today,
+        report_date=date(today.year - 1, 12, 31),
+    )
+    quarterly = _filing(
+        "0000000123-26-000011",
+        form="10-Q",
+        filing_date=today,
+        report_date=today,
+    )
+    processor = _Processor(
+        {
+            annual.accession: _empty_bundle(tmp_path, company, annual, fiscal_period="FY"),
+            quarterly.accession: _empty_bundle(tmp_path, company, quarterly, fiscal_period="Q2"),
+        }
+    )
+    gateway = _Gateway(company, [annual], [quarterly])
+    store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path)
+    CompanyIngestionService(
+        store=store,
+        sec_gateway_factory=lambda: gateway,
+        processor_factory=lambda: processor,
+        today_fn=lambda: today,
+    ).ingest_company("TEST", annual_count=1, quarterly_count=1)
+    monkeypatch.setenv("SEC_INLINE_FINANCIALS_DATA_DIR", str(tmp_path))
+
+    exit_code = run_company_ingestion(["TEST", "--annual-count", "1", "--quarterly-count", "1"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "TEST: reused_local\n"
+    assert captured.err.splitlines() == [
+        "[progress] Initializing evidence storage for TEST...",
+        "[progress] Checking stored refresh state for TEST...",
+        "[progress] Stored evidence is current for TEST; SEC check skipped.",
+    ]
+
+
+def main() -> int:
+    """Run the production ingestion command from this test module."""
+    return run_company_ingestion()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

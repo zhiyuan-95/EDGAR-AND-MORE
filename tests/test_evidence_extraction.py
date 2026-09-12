@@ -5,8 +5,10 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+from arelle import XbrlConst
 from arelle.ModelDocument import Type
 from arelle.ModelValue import QName
+from lxml import etree
 
 from sec_inline_financials.evidence_extraction import detach_filing_evidence
 from sec_inline_financials.evidence_models import ExtractionProfile
@@ -179,11 +181,12 @@ def test_detachment_covers_nested_remaining_nil_nonnumeric_and_undefined_facts(
     )
     profile = ExtractionProfile(
         application_version="0.1.0",
-        extractor_version="evidence-extractor-v1",
+        extractor_version="evidence-extractor-v2",
         arelle_version="2.41.7",
         validation_options=(("validate", "true"),),
         transform_plugin_revision="fixture",
         transform_plugin_hashes=(),
+        serialization_version="evidence-v2",
     )
     first = detach_filing_evidence(
         model,
@@ -207,7 +210,83 @@ def test_detachment_covers_nested_remaining_nil_nonnumeric_and_undefined_facts(
     assert first.coverage_manifest.unresolved_observation_count == 1
     assert first.coverage_manifest.nil_count == 1
     assert first.coverage_manifest.nonnumeric_count == 3
+    assert first.coverage_manifest.filing_section_count == 6
+    assert first.coverage_manifest.extracted_filing_section_count == 0
+    assert {section.extraction_status for section in first.filing_sections} == {"not_found"}
     assert any(observation.parent_fact_key for observation in first.observations)
     assert payload_hash(first) == payload_hash(second)
     assert source_manifest_hash(first) == source_manifest_hash(second)
     assert Path(first.source_documents[0].captured_path or "").read_bytes() == source.read_bytes()
+
+
+def test_detachment_uses_relationship_arc_element_for_source_locator(tmp_path: Path) -> None:
+    source = tmp_path / "filing.htm"
+    source.write_bytes(b"<html>exact source bytes</html>")
+    filing = Filing(
+        accession="0000000123-25-000001",
+        filing_date=date(2025, 2, 1),
+        report_date=date(2024, 12, 31),
+        form="10-K",
+        primary_document="filing.htm",
+        url="https://www.sec.gov/Archives/edgar/data/123/accession/filing.htm",
+    )
+    company = Company(ticker="TEST", cik="0000000123", name="Test Company")
+    document = SimpleNamespace(
+        uri=filing.url,
+        filepath=str(source),
+        type=Type.INLINEXBRL,
+    )
+    parent = _Concept("us-gaap", "urn:us-gaap", "Assets", numeric=True)
+    child = _Concept("us-gaap", "urn:us-gaap", "Cash", numeric=True)
+    arc = etree.fromstring(b"<calculationLink><calculationArc/></calculationLink>")[0]
+
+    def invalid_document_proxy() -> None:
+        raise AssertionError("invalid Document proxy")
+
+    relationship = SimpleNamespace(
+        arcElement=arc,
+        getroottree=invalid_document_proxy,
+        modelDocument=document,
+        linkrole="https://example.test/role/BalanceSheet",
+        order=Decimal("1"),
+        fromModelObject=parent,
+        toModelObject=child,
+        modelLink=SimpleNamespace(qname=QName("link", XbrlConst.link, "calculationLink")),
+        qname=QName("link", XbrlConst.link, "calculationArc"),
+        weight=Decimal("1"),
+    )
+
+    def relationship_set(arcrole: str) -> SimpleNamespace:
+        relationships = (relationship,) if arcrole == XbrlConst.summationItem else ()
+        return SimpleNamespace(modelRelationships=relationships)
+
+    model = SimpleNamespace(
+        urlDocs={filing.url: document},
+        facts=(),
+        factsInInstance=(),
+        undefinedFacts=(),
+        contexts={},
+        units={},
+        relationshipSet=relationship_set,
+        roleTypeDefinition=lambda _role_uri: "Balance Sheet",
+    )
+    profile = ExtractionProfile(
+        application_version="0.1.0",
+        extractor_version="evidence-extractor-v1",
+        arelle_version="2.41.7",
+        validation_options=(("validate", "true"),),
+        transform_plugin_revision="fixture",
+        transform_plugin_hashes=(),
+    )
+
+    bundle = detach_filing_evidence(
+        model,
+        company=company,
+        filing=filing,
+        raw_log_json="{}",
+        capture_area=tmp_path / "capture",
+        extraction_profile=profile,
+    )
+
+    assert len(bundle.calculation_relationships) == 1
+    assert bundle.calculation_relationships[0].source_locator == ("/calculationLink/calculationArc")

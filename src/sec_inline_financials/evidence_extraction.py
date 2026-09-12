@@ -27,6 +27,7 @@ from sec_inline_financials.evidence_models import (
     ExtractionDiagnosticRecord,
     ExtractionProfile,
     FilingEvidenceBundle,
+    FilingSectionRecord,
     ObservationRecord,
     SourceDocumentRecord,
     UnitMeasureRecord,
@@ -34,6 +35,7 @@ from sec_inline_financials.evidence_models import (
     ValidationRecord,
     ValidationReferenceRecord,
 )
+from sec_inline_financials.filing_sections import extract_filing_sections
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.storage.fingerprints import canonical_json
 
@@ -75,7 +77,7 @@ def build_extraction_profile(transform_plugin: Path) -> ExtractionProfile:
     revision = hashlib.sha256(canonical_json(hashes).encode()).hexdigest()[:16]
     return ExtractionProfile(
         application_version=application_version,
-        extractor_version="evidence-extractor-v1",
+        extractor_version="evidence-extractor-v2",
         arelle_version=arelle_version,
         validation_options=(
             ("validate", "true"),
@@ -86,6 +88,7 @@ def build_extraction_profile(transform_plugin: Path) -> ExtractionProfile:
         ),
         transform_plugin_revision=revision,
         transform_plugin_hashes=tuple(hashes),
+        serialization_version="evidence-v2",
     )
 
 
@@ -102,6 +105,16 @@ def detach_filing_evidence(
     capture_area.mkdir(parents=True, exist_ok=True)
     documents, document_objects = _capture_source_documents(model, filing, capture_area)
     document_keys = {id(value): key for key, value in document_objects.items()}
+    filing_sections: tuple[FilingSectionRecord, ...] = ()
+    if extraction_profile.serialization_version == "evidence-v2":
+        primary_document = _primary_document(documents, filing)
+        if primary_document.captured_path is None:
+            raise CaptureError("The primary filing document has no captured bytes.")
+        filing_sections = extract_filing_sections(
+            Path(primary_document.captured_path).read_bytes(),
+            form=filing.form,
+            source_document_key=primary_document.key,
+        )
 
     gathered, top_level_orders, parent_objects, origins = _gather_observations(model)
     context_objects = _gather_referenced_and_inventory(
@@ -184,6 +197,10 @@ def detach_filing_evidence(
         validation_message_count=len(validation),
         calculation_relationship_count=len(relationships),
         source_document_count=len(documents),
+        filing_section_count=len(filing_sections),
+        extracted_filing_section_count=sum(
+            section.extraction_status == "extracted" for section in filing_sections
+        ),
     )
     fiscal_year, fiscal_year_source = _fiscal_year(observations, filing)
     fiscal_period, fiscal_period_source = _fiscal_period(observations, filing)
@@ -212,6 +229,7 @@ def detach_filing_evidence(
         extraction_profile=extraction_profile,
         coverage_manifest=coverage,
         raw_log_json=raw_log_json,
+        filing_sections=filing_sections,
     )
 
 
@@ -309,6 +327,34 @@ def _capture_source_documents(
     return tuple(records), objects
 
 
+def _primary_document(
+    documents: tuple[SourceDocumentRecord, ...], filing: Filing
+) -> SourceDocumentRecord:
+    exact = next(
+        (
+            document
+            for document in documents
+            if document.original_uri == filing.url and document.content_hash is not None
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+    primary_name = filing.primary_document.casefold()
+    fallback = next(
+        (
+            document
+            for document in documents
+            if document.original_uri.casefold().endswith(primary_name)
+            and document.content_hash is not None
+        ),
+        None,
+    )
+    if fallback is None:
+        raise CaptureError("The exact primary filing document was not captured.")
+    return fallback
+
+
 def _gather_observations(
     model: Any,
 ) -> tuple[list[Any], dict[int, int], dict[int, Any], dict[int, str]]:
@@ -376,9 +422,10 @@ def _object_key(kind: str, value: Any, document_keys: dict[int, str], fallback_o
 
 
 def _node_path(value: Any) -> str:
+    node = getattr(value, "arcElement", value)
     try:
-        tree = value.getroottree()
-        return str(tree.getpath(value))
+        tree = node.getroottree()
+        return str(tree.getpath(node))
     except (AttributeError, TypeError, ValueError):
         object_index = getattr(value, "objectIndex", None)
         xml_id = getattr(value, "id", None)

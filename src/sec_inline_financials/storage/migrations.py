@@ -22,6 +22,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_line_endings(raw: bytes) -> bytes:
+    return raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def _load_migrations() -> tuple[Migration, ...]:
     package = resources.files("sec_inline_financials.storage.sql")
     migrations: list[Migration] = []
@@ -31,7 +35,7 @@ def _load_migrations() -> tuple[Migration, ...]:
         version_text, separator, _name = resource.name.partition("_")
         if not separator or not version_text.isdigit():
             raise SchemaError(f"Invalid migration filename: {resource.name}")
-        raw = resource.read_bytes()
+        raw = _normalize_line_endings(resource.read_bytes())
         migrations.append(
             Migration(
                 version=int(version_text),

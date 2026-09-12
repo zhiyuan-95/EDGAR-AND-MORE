@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -83,11 +84,13 @@ class CompanyIngestionService:
         sec_gateway_factory: Callable[[], SecGateway],
         processor_factory: Callable[[], EvidenceProcessor],
         today_fn: Callable[[], date] = date.today,
+        progress: Callable[[str], None] | None = None,
     ) -> None:
         self._store = store
         self._sec_gateway_factory = sec_gateway_factory
         self._processor_factory = processor_factory
         self._today = today_fn
+        self._progress = progress or (lambda _message: None)
 
     def ingest_company(
         self,
@@ -103,7 +106,9 @@ class CompanyIngestionService:
         if annual_count < 1 or quarterly_count < 1:
             raise IngestionError("Annual and quarterly filing counts must both be positive.")
 
+        self._progress(f"Initializing evidence storage for {requested}...")
         self._store.initialize()
+        self._progress(f"Checking stored refresh state for {requested}...")
         today = self._today()
         previous = self._store.get_company_state(requested)
         annual_due = _check_is_due(
@@ -113,11 +118,17 @@ class CompanyIngestionService:
             previous.next_check_date_10q if previous is not None else None, today
         )
         requires_evidence = previous is None or not previous.has_evidence
-        incomplete_window = bool(previous is not None and previous.active_filings_without_evidence)
+        incomplete_window = bool(
+            previous is not None
+            and (
+                previous.active_filings_without_evidence or previous.active_filings_without_sections
+            )
+        )
         should_check_sec = (
             force_refresh or requires_evidence or incomplete_window or annual_due or quarterly_due
         )
         if previous is not None and not should_check_sec:
+            self._progress(f"Stored evidence is current for {requested}; SEC check skipped.")
             return CompanyIngestionResult(
                 company=previous.company,
                 status="reused_local",
@@ -128,6 +139,7 @@ class CompanyIngestionService:
             )
 
         try:
+            self._progress(f"Checking SEC filings for {requested}...")
             gateway = self._sec_gateway_factory()
             company = gateway.resolve_company(requested)
             if previous is None:
@@ -145,6 +157,7 @@ class CompanyIngestionService:
         except DiscoveryError as exc:
             if previous is None or not previous.has_evidence:
                 raise
+            self._progress(f"SEC refresh failed for {requested}; using stored evidence.")
             return _failed_refresh_result(
                 previous,
                 annual_due=annual_due,
@@ -154,6 +167,11 @@ class CompanyIngestionService:
 
         known_accessions = set(previous.known_accessions if previous is not None else ())
         selected = (*annual, *quarterly)
+        self._progress(
+            f"Selected filings for {company.ticker}: "
+            f"{len(annual)} annual, {len(quarterly)} quarterly."
+        )
+        self._progress(f"Processing selected filings for {company.ticker}: {len(selected)} total.")
         new_accessions = tuple(
             filing.accession for filing in selected if filing.accession not in known_accessions
         )
@@ -161,6 +179,7 @@ class CompanyIngestionService:
             sec_client=gateway,
             processor=self._processor_factory(),
             store=self._store,
+            progress=self._progress,
         )
         run = evidence_service.ingest_selected_window(
             company,
@@ -211,6 +230,7 @@ class CompanyIngestionService:
             next_annual = today
         if "10-Q" in failed_forms:
             next_quarterly = today
+        self._progress(f"Publishing the active filing window for {company.ticker}...")
         self._store.publish_filing_window(
             company,
             annual=annual,
@@ -228,6 +248,7 @@ class CompanyIngestionService:
             status = "updated"
         else:
             status = "checked_no_update"
+        self._progress(f"Completed ingestion for {company.ticker}: {status}.")
         return CompanyIngestionResult(
             company=company,
             status=status,
@@ -241,7 +262,12 @@ class CompanyIngestionService:
         )
 
 
-def ingest_company(ticker: str, settings: IngestionSettings) -> CompanyIngestionResult:
+def ingest_company(
+    ticker: str,
+    settings: IngestionSettings,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> CompanyIngestionResult:
     """Ingest or update one company, contacting the SEC only when required."""
     store = EvidenceStore(settings.database_path, settings.artifact_root)
 
@@ -259,6 +285,7 @@ def ingest_company(ticker: str, settings: IngestionSettings) -> CompanyIngestion
             user_agent=require_user_agent(),
             cache_directory=settings.cache_directory,
         ),
+        progress=progress,
     )
     return service.ingest_company(
         ticker,
@@ -409,6 +436,10 @@ def _easter_sunday(year: int) -> date:
     return date(year, month, day)
 
 
+def _print_cli_progress(message: str) -> None:
+    print(f"[progress] {message}", file=sys.stderr, flush=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Ingest or update retained SEC filing evidence.")
     parser.add_argument("ticker")
@@ -423,7 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         force_refresh=args.force,
     )
     try:
-        result = ingest_company(args.ticker, settings)
+        result = ingest_company(args.ticker, settings, progress=_print_cli_progress)
     except ExplorerError as exc:
         print(f"Error: {exc}")
         return 1

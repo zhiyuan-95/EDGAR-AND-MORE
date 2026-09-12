@@ -31,6 +31,12 @@ immutable content-addressed archive. Direct Mapping, LLM integration, and the
 frontend remain later milestones. On-demand filing-window updates are implemented;
 mapping-result invalidation waits for the mapping milestone.
 
+The same filing snapshot also stores normalized narrative sections from the retained
+primary document. For a 10-K these are Items 1, 1A, 3, 7, 7A, and 8. For a 10-Q
+they are Part I Items 1-4 and Part II Items 1 and 1A. Each required section records
+its source range and content hash; missing or unparseable headings remain explicit
+instead of being treated as an empty disclosure.
+
 The existing report workflow is complete and remains explicitly invoked. The
 ingestion and update workflows do not generate reports automatically.
 
@@ -70,8 +76,9 @@ Preserve all three layers: original filings/resources, Arelle-processed financia
 observations, and supporting evidence. Store selected and dimensional observations
 in linked `facts` and `fact_dimensions` records; link reconciliation issues to
 their candidate facts; retain calculation arcs, role memberships, and validation
-records. Persist structured extraction before TXT rendering, using permanent
-IDs separate from report-local E/D/R references.
+records. Store the required 10-K/10-Q narrative items in `filing_sections`, linked
+to the retained primary source document. Persist structured extraction before TXT
+rendering, using permanent IDs separate from report-local E/D/R references.
 
 Build packets by company, metric, exact period, selected accession, and extraction
 version. Include relevant facts, dimensions, conflicts, complete grouped
@@ -145,6 +152,10 @@ uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 
 After refreshing the editable install with `uv sync`, the equivalent packaged
 command is `uv run --no-sync sec-inline-financials-ingest AAPL`.
+
+While ingestion runs, the command writes flushed stage and per-filing progress
+messages to stderr. The final company and run summaries remain on stdout so the
+two streams can be redirected independently.
 
 The first successful call returns `initialized`. Later calls use the stored
 next-check dates and return `reused_local` without SEC access until an annual or

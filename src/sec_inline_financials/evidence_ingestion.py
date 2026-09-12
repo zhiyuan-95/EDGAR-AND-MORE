@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal, Protocol
@@ -40,10 +41,12 @@ class EvidenceIngestionService:
         sec_client: SecGateway,
         processor: EvidenceProcessor,
         store: EvidenceStore,
+        progress: Callable[[str], None] | None = None,
     ) -> None:
         self._sec_client = sec_client
         self._processor = processor
         self._store = store
+        self._progress = progress or (lambda _message: None)
 
     def ingest_filing(self, company: Company, filing: Filing) -> FilingOutcome:
         run_id = self._store.create_processing_run(
@@ -83,14 +86,21 @@ class EvidenceIngestionService:
             },
         )
         filings = {filing.accession: filing for filing in (*annual, *quarterly)}
-        outcomes = tuple(
-            self._ingest_with_run(run_id, company, filing)
-            for filing in sorted(
-                filings.values(),
-                key=lambda item: (item.report_date, item.form, item.accession),
-                reverse=True,
-            )
+        selected = sorted(
+            filings.values(),
+            key=lambda item: (item.report_date, item.form, item.accession),
+            reverse=True,
         )
+        outcomes_list: list[FilingOutcome] = []
+        total = len(selected)
+        for index, filing in enumerate(selected, start=1):
+            self._progress(f"[{index}/{total}] Processing {filing.form} {filing.accession}...")
+            outcome = self._ingest_with_run(run_id, company, filing)
+            outcomes_list.append(outcome)
+            self._progress(
+                f"[{index}/{total}] Finished {filing.form} {filing.accession}: {outcome.status}."
+            )
+        outcomes = tuple(outcomes_list)
         status = self._store.finish_processing_run(run_id)
         return RunOutcome(run_id=run_id, status=status, filings=outcomes)
 
