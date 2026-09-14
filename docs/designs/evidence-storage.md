@@ -1,61 +1,64 @@
-# Section 3.1: Evidence Storage Implementation Plan
+# Section 3.1: Evidence Storage Design and Implementation Record
 
-Date: 2026-09-08  
-Status: IMPLEMENTED; local automated acceptance passed, opt-in live acceptance pending  
-Basis: `docs/project_proposal.txt`, especially sections 2.2, 3.1, and Milestone 1  
+Date: 2026-09-08; updated 2026-09-14
+Status: IMPLEMENTED; automated acceptance and recorded live 5/12 evidence-v2 runs passed
+Basis: `docs/designs/project_proposal.txt`, especially sections 2.2, 3.1, and Milestone 1
 Design choice: fresh plan; stored-evidence replay, selected by the project owner  
 Reviewed checkout at drafting: branch `gstack`
 
 ## 1. Outcome and scope
 
-Build a durable evidence store that can save a selected SEC filing, close Arelle,
+The implemented evidence store can save a selected SEC filing, close Arelle,
 restart the application, and retrieve the same observations and supporting
 evidence without SEC requests or another Arelle run.
 
-The first delivery implements Milestone 1. It stores all observed filing facts,
+Milestone 1 stores all observed filing facts,
 their meanings, contexts, units, dimensions, report classifications, conflict
 candidates, validation evidence, calculation relationships, and source-file
-provenance in one SQLite database with retained files alongside it.
+provenance in one SQLite database with retained files alongside it. The current
+`evidence-v2` profile also stores required 10-K/10-Q narrative sections parsed from
+the retained primary document.
 
 The selected approach is stored-evidence replay. Full offline Arelle reprocessing
 was considered and deferred: that would additionally require a complete dependency
 archive, URL resolution, and an independently tested offline execution mechanism.
 Reopening stored results is the acceptance criterion here.
 
-The existing inspection-report command and its SEC/Arelle workflow stay separate.
+The in-memory inspection-report service and its SEC/Arelle workflow stay separate.
 Storage ingestion never writes TXT reports. Tests may explicitly pass a database
-projection to the existing renderer to prove equivalence; this does not change
-the production report command into a database client.
+projection to the existing renderer to prove equivalence. There is currently no
+TXT-report console command; both installed console scripts run ingestion.
 
 ### Scope across the proposal's milestones
 
 | Area from section 3.1 | Delivery in this plan |
 |---|---|
-| Companies, filings, processing runs | Implement in Milestone 1 |
-| Concepts, contexts, units, every observed fact | Implement in Milestone 1 |
-| Dimensions, conflicts, validation, calculations | Implement in Milestone 1 |
-| Files, paths, hashes, source versions | Implement in Milestone 1 |
+| Companies, filings, processing runs | Implemented in Milestone 1; refresh columns and active-window ranks added by migration 0002 |
+| Concepts, contexts, units, every observed fact | Implemented in Milestone 1 |
+| Dimensions, conflicts, validation, calculations | Implemented in Milestone 1 |
+| Files, paths, hashes, source versions | Implemented in Milestone 1 |
+| Required narrative filing sections | Implemented by extraction profile v2 and migration 0003 |
 | Metric results and their fact links | Define the storage boundary here; implement with Milestone 2 |
 | Recommendations, exact model packets/responses, review decisions | Define the storage boundary here; implement with Milestone 3 |
-| Company refresh, amendment precedence, invalidation | Milestone 4; do not embed these policies in the evidence repository |
+| Company refresh and active-window publication | Implemented in Milestone 4; mapping invalidation remains later work |
 | HTTP download endpoints and frontend | Milestone 5; expose Python retrieval functions now |
 
 This is a storage design, not authorization to implement mapping rules, quarter
 derivation, a scheduler, a frontend, or a new financial-metric policy.
 
-## 2. Current code and the required changes
+## 2. Implemented code seams
 
-The code inspection found these seams:
+The implementation preserves the original report models while adding these storage seams:
 
-| Current code | Current behavior | Storage requirement |
+| Code seam | Report behavior | Implemented storage behavior |
 |---|---|---|
-| `arelle_adapter.py::_numeric_facts` | Drops nonnumeric, nil, invalid, missing-context/unit and non-report-period observations | Add complete extraction before any eligibility decisions |
-| `models.py::Fact` | Requires a `Decimal`, a unit, and a period end | Keep this report model; add a separate observation model |
-| `arelle_adapter.py::_process` | Raises when no selected primary or dimensional report facts remain | Storage can succeed with zero report-eligible facts if extraction itself completed |
-| `reconcile.py::reconcile_primary_facts` | Collapses exact report duplicates; records conflicts using context IDs and summary text | Retain every occurrence and link selections/conflicts to permanent fact IDs |
-| Validation extraction | Keeps level, code, and normalized message text from warning-level logs | Retain the raw log output, configured log policy, and structured references |
-| Calculation extraction | Returns a deduplicated set of role/parent/child/weight tuples | Preserve supported effective relationship occurrences and their source provenance |
-| `service.py::ReportApplication` | Produces annual/quarterly reports from in-memory results | Preserve this workflow; add a separate evidence-ingestion service |
+| `arelle_adapter.py::_numeric_facts` | Drops nonnumeric, nil, invalid, missing-context/unit and non-report-period observations | `extract_evidence` detaches complete observations before any report eligibility decisions |
+| `models.py::Fact` | Requires a `Decimal`, a unit, and a period end | The report model remains; `evidence_models.py` provides nullable detached observation records |
+| `arelle_adapter.py::_process` | Raises when no selected primary or dimensional report facts remain | Storage can succeed with zero report-eligible facts when complete extraction succeeds |
+| `reconcile.py::reconcile_primary_facts` | Collapses exact report duplicates; records conflicts using context IDs and summary text | Every occurrence is retained and selections/conflicts link to permanent fact IDs |
+| Validation extraction | Keeps level, code, and normalized message text from warning-level logs | Raw log output, configured log policy, and structured references are retained |
+| Calculation extraction | Returns a deduplicated set of role/parent/child/weight tuples | Supported effective relationship occurrences and source provenance are retained |
+| `service.py::ReportApplication` | Produces annual/quarterly reports from in-memory results | The workflow remains separate; `EvidenceIngestionService` owns durable ingestion |
 | `report.py` | Formats detached read models and assigns E/D/R labels | Reuse in compatibility tests; E/D/R never become database keys |
 
 The locked Arelle package is 2.41.7. Its `model.facts` contains top-level facts;
@@ -67,13 +70,16 @@ and verify behavior against the installed version during implementation.
 ## 3. Data flow and module responsibilities
 
 ```text
-Explicit evidence-ingestion request
+Company-ingestion request
+  -> inspect stored refresh state and section coverage
+  -> reuse local state without SEC/Arelle when complete and not due
   -> existing SEC company/filing discovery
   -> inspect compatible stored snapshots
   -> for each missing filing:
        Arelle session
          -> detach every observation and supporting record
          -> capture the exact required source files
+         -> parse required narrative sections from the retained primary document
        close session
          -> classify report eligibility without deleting observations
          -> verify and install retained files
@@ -85,7 +91,7 @@ Later, including after restart:
               -> retained artifact ID -> verified local file
 ```
 
-Proposed package additions:
+Implemented package structure:
 
 ```text
 src/sec_inline_financials/
@@ -97,18 +103,20 @@ src/sec_inline_financials/
     database.py              Connections and transaction ownership
     migrations.py            Numbered migration runner
     sql/0001_evidence.sql     Initial schema, constraints, indexes, views
+    sql/0002_company_refresh.sql  Refresh dates and active-window state
+    sql/0003_filing_sections.sql Narrative-section records and constraints
     artifacts.py             Stage, verify, install and resolve retained files
     evidence_store.py        Save/load snapshots and bounded evidence queries
     report_projection.py     Explicit adapter used for report equivalence checks
     recovery.py              Reconcile interrupted attempts and artifact state
 ```
 
-`ArelleProcessor` gains an `extract_evidence` entry point. Share only session setup
+`ArelleProcessor` exposes an `extract_evidence` entry point. It shares only session setup
 and proven extraction helpers with the current report path. Do not make existing
 report processing depend on the new database. Keep the SEC and processor seams
 injectable; repository tests should use a real temporary SQLite database.
 
-Use the standard-library `sqlite3`, `decimal`, `hashlib`, and `pathlib` modules.
+The implementation uses the standard-library `sqlite3`, `decimal`, `hashlib`, and `pathlib` modules.
 No ORM, database server, vector database, or job-queue dependency is required.
 
 ## 4. Evidence vocabulary and invariants
@@ -246,20 +254,38 @@ Do not infer numerical reconciliation success from the existence of a calculatio
 relationship. The report projection continues to expose its current Calculation
 1.0 relationship set and ordering.
 
+### 5.5 Narrative filing sections
+
+Extraction profile `evidence-v2` selects the exact retained primary document and
+parses required narrative sections before the Arelle session closes. The parser
+stores normalized text separately from the immutable source bytes.
+
+The required 10-K set is Items 1, 1A, 3, 7, 7A, and 8. The required 10-Q set is
+Part I Items 1-4 and Part II Items 1 and 1A. Every required section produces one
+ordered record with `extracted`, `not_found`, or `parse_error` status. Extracted
+records include source locators and a SHA-256 of normalized text; unavailable
+records retain a diagnostic and never masquerade as an empty disclosure.
+
+Section content participates in the evidence-v2 semantic payload hash. A legacy
+evidence-v1 snapshot remains immutable and reusable for explicit v1 retrieval, but
+it does not satisfy the current active-window section requirement. Company ingestion
+therefore reprocesses active legacy filings into new evidence-v2 snapshots.
+
 ## 6. SQLite schema
 
-The lists below are the required logical columns; implementation should turn them
-into explicit DDL in `0001_evidence.sql`. IDs are integer primary keys unless stated
-otherwise. Dates/timestamps are ISO-8601 text, timestamps include UTC, and exact
-numeric fields are text. Required/optional rules below are part of the contract.
+The lists below describe the implemented logical columns across
+`0001_evidence.sql`, `0002_company_refresh.sql`, and
+`0003_filing_sections.sql`. IDs are integer primary keys unless stated otherwise.
+Dates/timestamps are ISO-8601 text, timestamps include UTC, and exact numeric fields
+are text. Required/optional rules below are part of the contract.
 
 ### 6.1 Identity, attempts, and snapshots
 
 | Table | Required columns and responsibility |
 |---|---|
 | `schema_migrations` | `version` PK, filename, checksum, applied_at |
-| `companies` | id, unique zero-padded CIK, current name; optional ticker; created_at, updated_at |
-| `filings` | id, company_id, accession, form, filing_date, report_date, primary_document, source_url; unique accession |
+| `companies` | id, unique zero-padded CIK, current name; optional ticker; latest filing dates, next annual/quarterly check dates; created_at, updated_at |
+| `filings` | id, company_id, accession, form, filing_date, report_date, primary_document, source_url, is_active, optional active_window_rank; unique accession |
 | `processing_runs` | id, company_id, purpose, requested-window JSON, owner_pid, owner_process_start_identity, started_at, optional completed_at/error_summary, status |
 | `processing_run_filings` | id, run_id, filing_id, status, started_at, optional completed_at/snapshot_id/error_code/error_text; unique run_id + filing_id |
 | `evidence_snapshots` | id, filing_id, completed_by_attempt_id, captured_company_name, captured_filing_metadata_json, source_manifest_hash, extraction_profile_hash, extraction_profile_json, payload_hash, coverage_manifest_json, captured_at; optional captured_company_ticker, fiscal_year/fiscal_period with their source |
@@ -335,6 +361,7 @@ an existing snapshot under a different report date.
 | `snapshot_artifacts` | snapshot_id, artifact_id, purpose, logical_name; unique snapshot_id + purpose + logical_name |
 | `attempt_artifacts` | attempt_id, artifact_id, purpose, logical_name; unique attempt_id + purpose + logical_name |
 | `source_documents` | id, snapshot_id, original_uri, document_kind, retention_kind; optional artifact_id, content_hash, parent/source-reference details |
+| `filing_sections` | id, snapshot_id, section key/order, item identity/title, extraction status, source_document_id; optional heading, source range, normalized text/hash, diagnostic |
 
 Artifacts have no mandatory filing owner: one file can support several snapshots,
 and later evidence packets can span several filings. Typed link tables establish
@@ -454,6 +481,7 @@ Initial indexes should serve these queries:
 | `reconciliation_issue_facts(issue_id, candidate_order)` | Ordered conflict candidates |
 | `calculation_arcs(snapshot_id, role_id, parent_concept_id)` | Role-scoped calculation children |
 | `validation_messages(snapshot_id, message_order)` | Stable message replay |
+| `filing_sections(snapshot_id, part, item, section_order)` | Ordered narrative-section retrieval |
 
 Do not sort or aggregate monetary amounts through SQLite text or floating-point
 casts. Parse exact numeric text into `Decimal` where arithmetic is later authorized.
@@ -518,7 +546,7 @@ source file cannot be identified, the attempt fails with a specific capture erro
 
 ### 8.2 Layout and verification
 
-Recommended runtime root on Windows: `%LOCALAPPDATA%/SECInlineFinancials/data`.
+Default runtime root on Windows: `%LOCALAPPDATA%/SECInlineFinancials/data`.
 Keep the live database outside the OneDrive-backed checkout. Constructors accept
 explicit paths; tests use temporary directories. Source code and the plan remain
 in the checkout. Database location is a configurable implementation default, not a
@@ -580,7 +608,7 @@ immutable objects in this milestone. Garbage collection is a later policy.
 ## 9. SQLite lifecycle and repeat-ingestion rules
 
 Open short-lived connections with foreign keys enabled, a bounded busy timeout
-(initially 5 seconds), WAL mode, and `synchronous=FULL`. FULL is proposed because
+(5 seconds), WAL mode, and `synchronous=FULL`. FULL is configured because
 this is durable evidence. SQLite documents that WAL with NORMAL can lose recently
 committed transactions on power loss; FULL adds a sync at each commit. Filesystem
 and hardware guarantees still apply. See [SQLite synchronous settings](https://sqlite.org/pragma.html#pragma_synchronous).
@@ -605,6 +633,9 @@ Repeat ingestion means no duplicate evidence, not a fresh verification of SEC st
   bundle, classify it, and save the evaluation separately. Reusing source evidence
   does not require an Arelle run just to apply a newer report rule.
 - A newer profile can create a new snapshot; earlier snapshots remain retrievable.
+- Active snapshots without the current narrative-section profile make the company
+  window incomplete and trigger a request-time refresh even before its next-check
+  dates. Evidence-v1 rows are retained while evidence-v2 snapshots are added.
 - Reusing local evidence does not claim that remote filing bytes were rechecked.
 - If acquisition occurs and observes a different manifest, store a distinct source
   snapshot; do not overwrite the prior one. Choosing which snapshot feeds published
@@ -644,6 +675,7 @@ EvidenceStore.get_report_evaluation(snapshot_id, report_kind, rule_version)
 EvidenceStore.save_report_evaluation(snapshot_id, evaluation)
     -> ReportEvaluationRef
 EvidenceStore.list_concepts(snapshot_id, cursor, limit) -> concept page
+EvidenceStore.list_filing_sections(snapshot_id) -> ordered section records
 EvidenceStore.list_facts(snapshot_id, filters, cursor, limit) -> fact page
 EvidenceStore.get_fact(fact_id) -> fact + source/context/unit/dimensions
 EvidenceStore.get_conflict(issue_id) -> issue + ordered candidates
@@ -656,8 +688,11 @@ EvidenceIngestionService.ingest_filing(company, filing) -> FilingOutcome
 EvidenceIngestionService.ingest_company_window(ticker, annual_count=5, quarterly_count=12)
     -> RunOutcome
 
-project_report(snapshot_id, evaluation_id)
+project_report(bundle, evaluation)
     -> AnnualResult | QuarterlyResult
+
+ingest_company(ticker, settings, progress=None)
+    -> CompanyIngestionResult
 ```
 
 The store controls SQL and connection ownership. Query results are detached and
@@ -700,14 +735,14 @@ metric precedence, and target-specific evidence selection need their own design.
 Observed-concept enumeration prevents a weak report shortlist from being mistaken
 for an exhaustive filing search.
 
-## 12. Implementation work packages
+## 12. Implementation work packages and status
 
 Complete each package with its acceptance evidence before depending on it. The
 critical path is P0 -> P1/P2 -> P3 -> P4/P5 -> P6 -> P7 -> P8. P1 and P2 can be
 developed independently after the extraction proof; P4 and P5 meet at the bundle
 and artifact contracts. Parallel development is optional, not a runtime requirement.
 
-### P0. Prove capture and freeze the current report contract
+### P0. Prove capture and freeze the current report contract — complete
 
 Files: adapter tests, report fixtures, a small local Inline XBRL fixture with
 relative schema/linkbase references.
@@ -726,7 +761,7 @@ Exit: observed identities/counts are understood; archived hashes match parser in
 the unchanged renderer matches its goldens. Resolve adapter assumptions here before
 freezing DDL. This is the first concrete implementation assignment.
 
-### P1. Add detached evidence types and complete extraction
+### P1. Add detached evidence types and complete extraction — complete
 
 Files: `evidence_models.py`, `evidence_extraction.py`, focused adapter additions/tests.
 
@@ -740,10 +775,11 @@ Files: `evidence_models.py`, `evidence_extraction.py`, focused adapter additions
 Exit: the bundle remains usable after session closure; serialization preserves
 every fixture observation and exact value without accessing Arelle properties.
 
-### P2. Add migrations, configuration, and relational constraints
+### P2. Add migrations, configuration, and relational constraints — complete
 
-Files: `storage/database.py`, `storage/migrations.py`, `storage/sql/0001_evidence.sql`,
-storage configuration and packaging declarations.
+Files: `storage/database.py`, `storage/migrations.py`, migrations
+`0001_evidence.sql` through `0003_filing_sections.sql`, storage configuration, and
+packaging declarations.
 
 - Implement all initial tables/views and the scoped foreign keys.
 - Configure connections and transactional, checksum-verified migrations.
@@ -753,7 +789,7 @@ storage configuration and packaging declarations.
 Exit: clean/repeated initialization works; failed migrations roll back; altered
 migrations/newer schemas fail clearly; cross-snapshot links are rejected by SQLite.
 
-### P3. Classify reports without losing observations
+### P3. Classify reports without losing observations — complete
 
 Files: `evidence_classification.py`, focused reconciliation adapter and tests.
 
@@ -764,7 +800,7 @@ Files: `evidence_classification.py`, focused reconciliation adapter and tests.
 Exit: roles cover the entire bundle; report selections/conflicts equal the legacy
 results; a nil, YTD, invalid, or comparative fact remains in the observation set.
 
-### P4. Install immutable artifacts
+### P4. Install immutable artifacts — complete
 
 Files: `storage/artifacts.py`, capture adapter, artifact tests.
 
@@ -776,7 +812,7 @@ Files: `storage/artifacts.py`, capture adapter, artifact tests.
 Exit: a required file cannot be linked as valid unless its bytes and path checks
 pass; equivalent content can be shared; no committed object is deleted by cleanup.
 
-### P5. Save and reload one complete snapshot
+### P5. Save and reload one complete snapshot — complete
 
 Files: `storage/evidence_store.py`, transaction/round-trip tests.
 
@@ -791,7 +827,7 @@ saves return the same snapshot and fact IDs. Changing current company metadata
 cannot change a reloaded historical bundle. Fingerprints remain stable across
 different attempt directories and operational log timestamps.
 
-### P6. Add retrieval and explicit report projection
+### P6. Add retrieval and explicit report projection — complete
 
 Files: repository query functions, `storage/report_projection.py`, retrieval tests.
 
@@ -800,12 +836,13 @@ Files: repository query functions, `storage/report_projection.py`, retrieval tes
 - Add separate evaluation lookup/save so a new rule can classify stored evidence
   without altering a snapshot or invoking Arelle.
 - Rebuild existing report read models from a chosen snapshot/evaluation.
-- Keep current report command routing and output filenames unchanged.
+- Keep report rendering and output filenames unchanged; report generation remains
+  an explicit Python API rather than an ingestion side effect.
 
 Exit: with SEC/Arelle calls disabled and the extraction cache unavailable, stored
 evidence can be queried and the fixture report output is byte-identical.
 
-### P7. Add explicit ingestion and interruption recovery
+### P7. Add explicit ingestion and interruption recovery — complete at library level
 
 Files: `evidence_ingestion.py`, `storage/recovery.py`, orchestration tests.
 
@@ -813,12 +850,13 @@ Files: `evidence_ingestion.py`, `storage/recovery.py`, orchestration tests.
 - Reuse compatible complete snapshots; record per-filing and aggregate outcomes.
 - Separate file installation from the database commit as specified above.
 - Add restart reconciliation with live-owner checks and no automatic object pruning.
-- Keep frontend-triggered refresh and scheduling out of this implementation.
+- Keep scheduling out of this implementation. The request-triggered company service
+  is ready for a later frontend caller.
 
 Exit: a mixed multi-filing run retains completed filings after another fails; retry
 does not repeat stored work; ingestion creates no inspection report.
 
-### P8. Verify real evidence, packaging, and restoration
+### P8. Verify real evidence, packaging, and restoration — partially complete
 
 Files: opt-in live acceptance test, storage runbook, acceptance evidence artifact.
 
@@ -832,9 +870,11 @@ Files: opt-in live acceptance test, storage runbook, acceptance evidence artifac
 - Record elapsed time, database size, artifact size, largest text fact, and peak
   memory for these fixtures. Set performance budgets from measurements.
 
-Exit: record the exact accessions, profiles, counts, hashes, commands and outcomes.
-A one-accession pass proves the storage round trip; only the separate window run
-proves full-window orchestration. No claim of SEC EFM-complete validation is added.
+Recorded production runs prove full 5/12 evidence-v2 window orchestration, section
+persistence, and artifact audits. Automated tests cover packaging and backup/restore.
+A live update that discovers a genuinely new accession, plus a repeatable published
+performance record including peak memory, remains open. No claim of SEC
+EFM-complete validation is added.
 
 ## 13. Acceptance matrix
 
@@ -875,10 +915,12 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-Live acceptance remains opt-in using the existing SEC configuration mechanism.
+Live pytest acceptance remains opt-in using the existing SEC configuration mechanism.
 Do not place credentials or user-agent contact information in acceptance artifacts.
-The local unit, round-trip, rollback, recovery, backup, lint, format, and type checks
-passed on 2026-09-08. The real-filing and full-window acceptance rows remain pending.
+As of 2026-09-14, the local suite passes with 39 tests and one skipped live test.
+Recorded production CLI runs contain successful full 5/12 evidence-v2 windows, and
+current snapshot audits verify their linked artifact hashes and foreign keys. These
+runs do not prove a future new-accession refresh or SEC EFM-complete validation.
 
 ## 14. Review status and remaining implementation probes
 
@@ -890,15 +932,19 @@ review concerns remain. This is document review, not implementation verification
 The owner selected a fresh proposal-based plan and stored-evidence replay. The
 implementation now lives in `evidence_models.py`, `evidence_extraction.py`,
 `evidence_classification.py`, `evidence_ingestion.py`, and the `storage` package.
-The legacy report command does not depend on these modules and remains unchanged.
+The in-memory report service does not depend on these modules. Its renderer and
+filenames remain available through the Python API, but its former console route now
+runs ingestion.
 
-Local fixtures verify exact source capture and undefined/nested observation
-detachment, but the installed-Arelle multi-document fixture and real-filing probes
-remain acceptance work. This is not permission to reduce the all-observed-facts
-requirement. A missing required resource or unrepresentable exposed observation
-still fails the import instead of committing a shortened snapshot.
+Local fixtures verify exact source capture, undefined/nested observation detachment,
+narrative-section parsing, and snapshot replay. Recorded real-filing 5/12 runs verify
+the production storage path. This is not permission to reduce the
+all-observed-facts requirement. A missing required resource or unrepresentable
+exposed observation still fails the import instead of committing a shortened
+snapshot.
 
-Milestone 1 is complete when the acceptance matrix and the scoped acceptance runs
-pass, a documented backup can restore the evidence, and the existing report workflow
-still behaves as specified. Later mapping, recommendation and update milestones
-retain their own acceptance gates.
+Milestone 1 is implemented and has automated plus recorded live-window evidence.
+The remaining live new-accession/performance probe is tracked as an acceptance
+boundary, not as missing storage functionality. Mapping, recommendation, and
+frontend milestones retain their own acceptance gates; request-triggered evidence
+updates are implemented separately in `ingestAndUpdate.txt`.

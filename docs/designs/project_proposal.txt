@@ -2,7 +2,7 @@
 
 **Audience:** Project owner  
 **Application model:** Local, single-user application  
-**Status:** Proposed expansion of the existing SEC/Arelle reporting foundation
+**Status:** Current blueprint; evidence storage and on-demand refresh implemented
 
 ## 1. Project objective and scope
 
@@ -29,23 +29,25 @@ This proposal defines the project's main components, responsibilities, dependenc
 
 ## 2. Existing foundation
 
-### 2.1 SEC ingestion and Arelle processing
+### 2.1 SEC ingestion, Arelle processing, and durable evidence
 
 The current application already:
 
 - resolves a ticker to an SEC company;
 - discovers eligible Inline XBRL 10-K and 10-Q filings;
 - loads filings with Arelle;
-- extracts report-period facts, dimensions, reconciliation issues, validation messages, and calculation relationships; and
-- represents this evidence in structured Python objects before rendering.
+- detaches every Arelle-exposed observation, context, unit, dimension, validation message, and supported calculation relationship before the Arelle session closes;
+- retains exact filing-owned source resources, the Arelle log, and a source manifest in a SHA-256 content-addressed archive;
+- stores immutable, normalized filing snapshots and versioned report classifications in SQLite; and
+- extracts required narrative sections from the retained primary document into the same snapshot.
 
-This foundation is complete for the current reporting workflow. The planned storage work will extend extraction so every observed filing fact can be persisted, including facts excluded by current report filters. That extension supports the database and mapping workflows without changing the completed report contract.
+The current storage profile is `evidence-v2`. It preserves facts excluded by the report filters and records extracted, missing, or unparseable narrative sections explicitly. A compatible snapshot can be reused only after its linked artifacts pass integrity checks. A newer extraction profile creates a new snapshot without rewriting the older one.
 
 ### 2.2 On-demand inspection reports
 
-The existing annual and quarterly TXT reporting capability is finished and remains unchanged.
+The annual and quarterly TXT reporting service remains implemented and separate from evidence ingestion.
 
-- Reports are generated only when the existing report command is explicitly called.
+- Reports are generated only when the Python report API is explicitly called; there is currently no report console command.
 - Reports are for the project owner's inspection.
 - Company ingestion and updates do not generate reports automatically.
 - Reports under `output/` are examples of the information currently produced.
@@ -53,7 +55,7 @@ The existing annual and quarterly TXT reporting capability is finished and remai
 
 Reporting remains a separate supporting capability and is not a new implementation milestone.
 
-## 3. Planned system structure
+## 3. Current and planned system structure
 
 ```text
 Local browser frontend
@@ -71,8 +73,8 @@ Local Python backend
         +--> retained filing and evidence files
         +--> SEC discovery and Arelle processing
 
-Explicit report command
-        +--> existing report generation --> TXT inspection report
+Explicit Python report API
+        +--> in-memory SEC/Arelle report generation --> TXT inspection report
 ```
 
 The browser frontend communicates with the local Python backend. The backend owns SQLite connections, filesystem access, SEC/Arelle processing, mapping operations, and downloads. This allows the frontend to use local data without coupling it directly to the database schema.
@@ -86,6 +88,7 @@ At a high level, storage covers:
 - companies, filings, and processing runs;
 - concepts, contexts, units, and all observed filing facts;
 - dimensions linked to their facts;
+- normalized required 10-K/10-Q narrative sections linked to the retained primary document;
 - reconciliation issues and their candidate facts;
 - validation messages and calculation relationships;
 - metric results, mapping recommendations, and review decisions; and
@@ -109,14 +112,16 @@ The recommendation is stored with its evidence and remains pending until the use
 
 Updates occur through local application use rather than a background schedule.
 
-- Opening a company triggers a lightweight SEC filing check.
-- The frontend also provides a manual refresh action.
+- A company request first checks stored refresh state.
+- SEC discovery runs only when the annual or quarterly check is due, refresh is forced, evidence is missing, or an active snapshot lacks the current narrative-section profile.
+- A complete current window returns `reused_local` without SEC or Arelle access.
+- The planned frontend will expose company access and a manual refresh action over this backend behavior.
 - When no eligible filing changed, the backend reuses the stored company data.
 - When new eligible filings are found, the backend stores the new evidence and refreshes affected metric results.
 - Earlier evidence and mapping decisions remain retained for traceability.
 - Ingestion and updates do not generate TXT inspection reports.
 
-Transaction, retry, versioning, amendment, and recommendation-invalidation rules will be defined in the separate update design.
+Current transaction, retry, snapshot-versioning, active-window, and fallback rules are defined in `ingestAndUpdate.txt` and `evidence-storage.md`. Mapping recommendation invalidation remains a Milestone 2/3 design concern.
 
 ### 3.4 Frontend
 
@@ -136,29 +141,31 @@ The frontend does not open or query SQLite directly. The backend supplies stable
 
 ## 4. Runtime workflows
 
-### 4.1 First company ingestion
+### 4.1 First company ingestion: implemented foundation plus planned mapping
 
-1. The user selects a company in the frontend.
-2. The backend resolves the company and selects its filing window.
-3. SEC filing resources are acquired and processed with Arelle.
-4. All observed filing facts and supporting evidence are stored.
-5. Direct Mapping runs for the seven Target Metrics for every supported period.
-6. Unresolved metrics enter the LLM recommendation and human-review workflow.
-7. The frontend displays the stored metric results and evidence.
+1. A caller submits a company ticker through the ingestion CLI or Python API.
+2. The backend initializes storage, resolves the company, and selects its filing window.
+3. Each selected filing is processed in its own Arelle session.
+4. All exposed observations, supporting evidence, retained resources, and required narrative-section records are stored per filing.
+5. The backend publishes the active five-annual/twelve-quarter window after processing and returns per-filing outcomes.
+6. In Milestone 2, Direct Mapping will run for the seven Target Metrics for every supported period.
+7. In Milestone 3, unresolved metrics will enter the LLM recommendation and human-review workflow.
+8. In Milestone 5, the frontend will display stored metric results and evidence.
 
 This workflow does not generate a TXT inspection report.
 
-### 4.2 Company access and update
+### 4.2 Company access and update: implemented
 
-1. Opening a stored company triggers an SEC metadata check.
-2. If nothing relevant changed, the backend serves the existing stored results.
-3. If new eligible filings exist, the backend processes and persists the additions.
-4. Affected periods and mappings are refreshed.
-5. The frontend shows the update status while retaining historical evidence.
+1. A stored-company request checks next-check dates and evidence completeness locally.
+2. If the window is complete and no check is due, the backend returns `reused_local` without SEC or Arelle access.
+3. A due, forced, missing-evidence, or missing-section request refreshes SEC metadata and processes the selected filing window.
+4. Compatible snapshots are artifact-verified and reused; missing or newer-profile snapshots are extracted and stored independently.
+5. The backend publishes the active window only after the run and retains earlier snapshots and inactive filing metadata.
+6. The result reports `checked_no_update`, `updated`, or `refresh_failed_using_local_data` as applicable. Metric refresh begins after Milestone 2 is implemented.
 
 ### 4.3 Inspection report generation
 
-1. The project owner explicitly invokes the existing report command.
+1. The project owner explicitly calls `sec_inline_financials.service.generate_reports` or `generate_report`.
 2. The current SEC/Arelle report workflow runs unchanged.
 3. The resulting annual and quarterly TXT files are used for manual inspection.
 
@@ -166,31 +173,31 @@ This workflow remains separate from normal ingestion, updates, and frontend use.
 
 ## 5. Implementation sequence
 
-### Milestone 1: Durable evidence storage
+### Milestone 1: Durable evidence storage — implemented
 
-Extend structured extraction to retain all observed filing facts and implement normalized SQLite storage plus artifact tracking.
+Structured extraction retains all observed filing facts, normalized SQLite evidence, artifact tracking, report replay, and profile-v2 narrative sections.
 
 This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. Repeated ingestion must be safe, failed imports must not leave partial results, and existing report behavior must remain unchanged.
 
-### Milestone 2: Direct Mapping
+### Milestone 2: Direct Mapping — planned next
 
 Implement period-by-period lookup for the seven Target Metrics using `mapping.txt` and persist each metric result with links to its filing evidence.
 
 This milestone proves that all seven metrics are evaluated for every supported period and that resolved, zero, missing, and conflicting states remain distinguishable without generating reports.
 
-### Milestone 3: LLM recommendations and human review
+### Milestone 3: LLM recommendations and human review — planned
 
 Build target-specific evidence retrieval, store exact model requests and responses, and support approval or rejection of Mapping Recommendations.
 
 This milestone proves that each recommendation is reproducible, cites retained evidence, and cannot become an accepted mapping without user approval.
 
-### Milestone 4: Incremental updates
+### Milestone 4: Incremental evidence updates — implemented
 
-Add company-access checks and manual refresh behavior that process new eligible filings and refresh affected results.
+Company-access checks and manual refresh behavior process selected eligible filings, publish active windows, and retain historical evidence. Refreshing mapped metric results remains dependent on Milestone 2.
 
 This milestone proves that no-change checks reuse stored data, new filings extend the evidence history, failed updates preserve the last usable result, and updates never generate inspection reports automatically.
 
-### Milestone 5: Local frontend
+### Milestone 5: Local frontend — planned
 
 Build the browser interface and local backend API over the completed storage, mapping, review, and update capabilities.
 

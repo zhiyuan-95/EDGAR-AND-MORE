@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SEC Metric Explorer - rough wireframe</title>
+  <title>SEC Metric Explorer - planned frontend wireframe</title>
   <style>
     /* Rough monochrome wireframe: hierarchy and interaction are being tested, not visual polish. */
     :root { --ink:#1f1f1f; --muted:#666; --line:#aaa; --paper:#fafafa; --panel:#fff; }
@@ -13,10 +13,10 @@
     button { cursor:pointer; }
     button[aria-pressed="true"], .active { outline:2px solid var(--ink); outline-offset:-2px; }
     header { min-height:66px; padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:18px; }
-    .brand { font-weight:700; letter-spacing:.03em; }
-    .demo { padding:2px 6px; border:1px dashed var(--line); color:var(--muted); font-size:11px; }
+    .brand { flex-shrink:0; font-weight:700; letter-spacing:.03em; }
+    .demo { flex-shrink:0; padding:2px 6px; border:1px dashed var(--line); color:var(--muted); font-size:10px; }
     .company { display:flex; gap:8px; align-items:center; flex:1; }
-    .company select { min-width:240px; }
+    .company select { min-width:210px; }
     .freshness { text-align:right; color:var(--muted); font-size:12px; }
     main { display:grid; grid-template-columns:210px minmax(520px, 1fr) 330px; min-height:calc(100vh - 66px); }
     aside, section { border-right:1px solid var(--line); }
@@ -24,7 +24,7 @@
     .eyebrow { margin:0 0 10px; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
     .metric { width:100%; display:flex; justify-content:space-between; align-items:center; margin:0 0 6px; text-align:left; }
     .state { display:inline-block; padding:1px 5px; border:1px solid var(--line); font-size:10px; text-transform:uppercase; }
-    .state.derived { border-style:dashed; }
+    .state.pending { border-style:dashed; }
     .state.issue { border-style:double; border-width:3px; }
     .center { padding:20px 22px 26px; }
     .toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
@@ -46,7 +46,7 @@
     .label { fill:#666; font-size:11px; }
     .legend { display:flex; gap:14px; padding-top:8px; border-top:1px dashed #ccc; color:var(--muted); font-size:11px; }
     .legend i { width:12px; height:12px; display:inline-block; margin-right:4px; border:2px solid #222; vertical-align:-2px; }
-    .legend .d { border-style:dashed; }
+    .legend .m { border-style:dashed; }
     .legend .u { border-style:double; border-width:3px; }
     .notice { margin-top:14px; padding:10px 12px; border:1px dashed var(--line); }
     .evidence { padding:18px; border-right:0; background:#fff; }
@@ -66,13 +66,13 @@
 <body>
   <header>
     <div class="brand">SEC METRIC EXPLORER</div>
-    <div class="demo">ROUGH WIREFRAME / DEMO VALUES</div>
+    <div class="demo">PLANNED UI / DEMO DATA</div>
     <div class="company">
       <label for="company">Company</label>
       <select id="company"><option>Microsoft Corp. (MSFT)</option></select>
     </div>
     <div class="freshness">Data through FY2026 Q3<br>Checked 8 minutes ago</div>
-    <button>Refresh filings</button>
+    <button>Refresh filings (planned)</button>
   </header>
 
   <main>
@@ -85,7 +85,7 @@
       <button class="metric" data-metric="Total Assets" aria-pressed="false"><span>Total assets</span><span class="state">reported</span></button>
       <button class="metric" data-metric="Total Liabilities" aria-pressed="false"><span>Total liabilities</span><span class="state">reported</span></button>
       <button class="metric" data-metric="Equity" aria-pressed="false"><span>Equity</span><span class="state issue">conflict</span></button>
-      <button class="metric" data-metric="Operating Cash Flow" aria-pressed="false"><span>Operating cash flow</span><span class="state derived">derived</span></button>
+      <button class="metric" data-metric="Operating Cash Flow" aria-pressed="false"><span>Operating cash flow</span><span class="state pending">unresolved</span></button>
       <div class="notice"><strong>1 item needs review</strong><br><span class="subtitle">Equity FY2024 has two conflicting eligible facts.</span></div>
     </aside>
 
@@ -111,7 +111,7 @@
           </g>
           <text class="label" x="61" y="278">FY24 Q1</text><text class="label" x="176" y="278">FY24 Q2</text><text class="label" x="291" y="278">FY24 Q3</text><text class="label" x="406" y="278">FY25 Q1</text><text class="label" x="521" y="278">FY25 Q2</text><text class="label" x="636" y="278">FY25 Q3</text>
         </svg>
-        <div class="legend"><span><i></i> Reported</span><span><i class="d"></i> Derived with lineage</span><span><i class="u"></i> Needs review</span></div>
+        <div class="legend"><span><i></i> Reported</span><span><i class="m"></i> Missing or unresolved</span><span><i class="u"></i> Needs review</span></div>
       </div>
       <div class="notice"><strong>Partial and failure behavior</strong> · A missing period stays as a labeled gap. A refresh failure keeps the last verified publication visible and reports the failed run separately.</div>
     </section>
@@ -120,7 +120,7 @@
     <aside class="evidence">
       <div class="evidence-head"><div><p class="eyebrow">Point evidence</p><h2 id="evidence-period">Revenue · FY2025 Q3</h2></div><span class="state" id="evidence-state">reported</span></div>
       <div class="value" id="evidence-value">$65,585M</div>
-      <div class="subtitle">Verified publication · exact value retained in storage</div>
+      <div class="subtitle">Planned evidence presentation · demo value only</div>
       <dl>
         <dt>Concept</dt><dd><code id="concept">us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax</code></dd>
         <dt>Period</dt><dd id="period">2025-01-01 → 2025-03-31 (duration)</dd>
@@ -128,21 +128,21 @@
         <dt>Mapping</dt><dd id="mapping">Direct mapping · primary candidate</dd>
         <dt>Validation</dt><dd>No blocking Arelle validation finding linked to this fact.</dd>
       </dl>
-      <div class="derivation" id="derivation" hidden><strong>Derived standalone quarter</strong><br>FY2025 nine-month YTD cash flow minus FY2025 six-month YTD cash flow. Both source facts remain linked and downloadable.</div>
+      <div class="derivation" id="derivation" hidden><strong>Unresolved metric</strong><br>No approved direct mapping exists for this demo period. LLM recommendation and human review remain planned; no quarter value is derived from YTD facts.</div>
       <div class="actions">
-        <button class="primary">Download this point + evidence</button>
-        <button>Download complete metric bundle</button>
-        <button>Open filing source</button>
+        <button class="primary">Download this point + evidence (planned)</button>
+        <button>Download metric bundle (planned)</button>
+        <button>Open filing source (planned)</button>
       </div>
     </aside>
   </main>
-  <footer>State sketch: verified success + conflict + derived + partial-refresh behavior</footer>
+  <footer>Planned frontend state sketch · demo data · no implemented mapping or downloads</footer>
 
   <script>
     // Small interaction proves the main information architecture without committing to a frontend framework.
     const series = {
-      "Revenue": { values:[46.98, 52.75, 56.19, 56.52, 62.02, 65.59], labels:["$46,980M","$52,747M","$56,189M","$56,517M","$62,020M","$65,585M"], state:"reported", latest:"$65,585M", change:"+10.1%", coverage:"6 / 6", concept:"us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", mapping:"Direct mapping · primary candidate", derived:false },
-      "Operating Cash Flow": { values:[30.6, 11.0, 21.4, 34.2, 12.8, 19.1], labels:["$30,583M","$11,005M","$21,406M","$34,180M","$12,795M","$19,085M"], state:"derived", latest:"$19,085M", change:"-10.8%", coverage:"6 / 6", concept:"us-gaap:NetCashProvidedByUsedInOperatingActivities", mapping:"Derived from compatible cumulative YTD facts", derived:true }
+      "Revenue": { values:[46.98, 52.75, 56.19, 56.52, 62.02, 65.59], labels:["$46,980M","$52,747M","$56,189M","$56,517M","$62,020M","$65,585M"], state:"reported", latest:"$65,585M", change:"+10.1%", coverage:"6 / 6", concept:"us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", mapping:"Planned direct mapping · demo candidate", pending:false },
+      "Operating Cash Flow": { values:[0,0,0,0,0,0], labels:["—","—","—","—","—","—"], state:"unresolved", latest:"—", change:"—", coverage:"0 / 6", concept:"No selected concept", mapping:"Direct mapping and LLM recommendation are planned", pending:true }
     };
     let current = "Revenue";
     const x = [80,195,310,425,540,655];
@@ -153,7 +153,7 @@
       document.getElementById('latest-value').textContent = s.latest;
       document.getElementById('change-value').textContent = s.change;
       document.getElementById('coverage-value').textContent = s.coverage;
-      document.getElementById('chart-state').textContent = s.derived ? 'Derived points retain source lineage' : 'All points reported';
+      document.getElementById('chart-state').textContent = s.pending ? 'No approved mapping for these demo periods' : 'All points reported';
       const min = Math.min(...s.values), max = Math.max(...s.values), span = Math.max(max-min, 1);
       const y = s.values.map(v => 230 - ((v-min)/span)*160);
       document.getElementById('trend').setAttribute('d', x.map((n,i)=>(i?'L':'M')+n+' '+y[i]).join(' '));
@@ -168,7 +168,7 @@
       document.getElementById('evidence-state').textContent = s.state;
       document.getElementById('concept').textContent = s.concept;
       document.getElementById('mapping').textContent = s.mapping;
-      document.getElementById('derivation').hidden = !s.derived;
+      document.getElementById('derivation').hidden = !s.pending;
     }
     document.querySelectorAll('.metric').forEach(b=>b.addEventListener('click',()=>draw(b.dataset.metric)));
     document.querySelectorAll('.point').forEach(p=>p.addEventListener('click',()=>showPoint(Number(p.dataset.index))));

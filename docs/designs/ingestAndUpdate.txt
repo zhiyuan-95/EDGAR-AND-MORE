@@ -1,245 +1,300 @@
-You are working on the SEC Insight RAG project.
+# SEC Inline Financials: Ingestion and Update Design
 
-SYSTEM SCOPE
-- SQLite stores company state, normalized facts, filing metadata, approved
-  mappings, mapped financial metrics, derived indicators, and retrieval chunks.
-- The configured database path is controlled by STOCK_SQL_DB_PATH.
-- The inspected configuration used stock_data.db.
-- Financial ingestion and retrieval-index synchronization are separate operations.
-- The proposed Arelle evidence database and LLM evidence-packet architecture
-  must not be described as already implemented.
+**Status:** Implemented for durable evidence ingestion and active-window refresh
+**Scope:** Current `sec_inline_financials` repository only
+**Out of scope:** Metric mapping, LLM recommendations, frontend delivery, and scheduled jobs
 
-1. UPDATE ENTRY POINT
+## 1. Public entry points
 
-The public entry point is:
+The primary console command is:
 
-ingest_company(ticker, settings)
+```powershell
+uv run --no-sync sec-inline-financials AAPL
+```
 
-Updates are request-triggered. A next-check date does not itself schedule or
-execute ingestion.
+It runs the production company-ingestion path, writes flushed progress to stderr,
+then writes the company/run summary, elapsed time, and resolved evidence paths to
+stdout.
 
-Decision sequence:
+The lower-level console aliases run the same ingestion without the final timing and
+path lines:
 
-A. Company does not exist:
-   Perform initial SEC ingestion.
+```powershell
+uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
+```
 
-B. Company exists:
-   Check annual refresh, quarterly refresh, and Inline XBRL enrichment eligibility.
+The public Python entry point is:
 
-   If any check requires processing:
-       Run the SEC ingestion path.
-   Otherwise:
-       Reuse locally stored source data.
-       Refresh local mappings, metrics, and indicators without SEC calls.
+```text
+ingest_company(ticker, settings, progress=None)
+    -> CompanyIngestionResult
+```
 
-Important:
-"reused_local" means no SEC retrieval, not necessarily no database writes.
+Supported settings include `annual_count`, `quarterly_count`, `force_refresh`, the
+SQLite path, artifact root, SEC User-Agent, and Arelle cache directory. The CLI
+defaults to five exact-form Inline XBRL 10-K filings and twelve exact-form Inline
+XBRL 10-Q filings. `--force` requests an SEC check even when stored next-check dates
+are in the future.
 
-2. SEC INGESTION SEQUENCE
+No next-check date starts work by itself. Ingestion is always request-triggered.
 
-Execute the following conceptual sequence:
+## 2. Runtime storage
 
-1. Resolve the ticker to CIK.
-2. Fetch SEC submissions and Company Facts.
-3. Normalize Company Facts.
-4. Initialize required SQLite tables and additive schema columns.
-5. Upsert normalized observations into raw_xbrl_facts.
-6. Read stored facts and determine active fiscal-period keys and accessions.
-7. Match active accessions against the recent SEC filing inventory.
-8. Download missing selected filing documents; reuse existing local documents.
-9. Upsert company metadata and refresh dates.
-10. Resolve and persist company industry labels.
-11. Determine whether new selected accessions were discovered.
-12. If no new accession was found, advance applicable due check dates.
-13. Upsert filing metadata and update filing active-window flags.
-14. Clean up eligible inactive downloaded filing documents.
-15. Load applicable approved concept mappings.
-16. Run conditional Inline XBRL/Arelle enrichment when needed.
-17. Map usable raw facts into base financial metrics.
-18. Upsert financial_metrics.
-19. Mark existing company indicators inactive.
-20. Recalculate active-period indicators and upsert results.
+`SEC_INLINE_FINANCIALS_DATA_DIR` controls the evidence root. When it is unset, the
+default is:
 
-3. REFRESH-DATE POLICY
+```text
+%LOCALAPPDATA%/SECInlineFinancials/data/
+  evidence.sqlite3
+  objects/sha256/<first-two-hash-characters>/<full-sha256>
+  staging/<attempt-id>/
+  cache/arelle/
+```
 
-The companies table stores:
+SQLite is the structured source of truth. The object directory contains immutable,
+content-addressed source documents, Arelle logs, and source manifests. Live data
+belongs outside the source checkout.
 
-- latest_10k_filing_date
-- latest_10q_filing_date
-- next_check_date_10k
-- next_check_date_10q
+## 3. Request decision sequence
 
-A check is due when its date is missing or today >= next_check_date.
+`CompanyIngestionService.ingest_company` executes this decision sequence:
 
-Initial next-check calculations:
+1. Normalize and validate the ticker and filing counts.
+2. Initialize the evidence store and apply packaged, checksum-verified migrations.
+3. Read stored company state, active accessions, snapshot coverage, narrative-section
+   coverage, and next-check dates.
+4. Contact the SEC only when at least one condition is true:
+   - the caller used `--force`;
+   - the company has no usable stored evidence;
+   - an active filing has no evidence snapshot;
+   - an active filing has no current narrative-section snapshot; or
+   - an annual or quarterly next-check date is due.
+5. If none is true, return `reused_local` without constructing the SEC client or
+   Arelle processor.
 
-- 10-K: filing date + 12 months.
-- Q1/Q2 10-Q: filing date + 3 months.
-- Q3 10-Q: filing date + 6 months.
+An active legacy `evidence-v1` window has no `filing_sections`. Its next request is
+therefore treated as incomplete even when the next-check dates are in the future.
+The request performs SEC discovery and creates `evidence-v2` snapshots instead of
+mutating the legacy snapshots.
 
-Move calculated dates backward to the preceding business day when necessary,
-using the implementation's weekend/market-holiday calendar.
+## 4. SEC discovery
 
-These are polling heuristics, not guaranteed publication dates.
+When a refresh is required:
 
-If processing finds no new selected filing accession:
-- Return checked_no_update.
-- Move applicable due checks to the next business day after today.
+1. Resolve the ticker to the SEC CIK.
+2. Reject a stored ticker/CIK ownership conflict.
+3. Read recent and archived SEC submissions metadata.
+4. Select both the requested annual and quarterly windows. A due check for one form
+   still enters the shared discovery path for both forms.
+5. Annual selection keeps eligible `isInlineXBRL = true` exact-form `10-K` filings,
+   groups candidates by report-date year, and keeps the latest filed candidate for
+   each selected year.
+6. Quarterly selection keeps the latest eligible `isInlineXBRL = true` exact-form
+   `10-Q` filings.
 
-A due annual or quarterly check enters the shared ingestion path; it does not
-mean the code fetches only that form's data.
+`10-K/A` and `10-Q/A` do not consume window positions because discovery requests
+exact forms. SEC submissions provide identity and filing URLs; financial values come
+from the filing-scoped Arelle models, not the SEC Company Facts API.
 
-4. RESULT STATUS SEMANTICS
+If SEC discovery raises `DiscoveryError` and no usable evidence exists, the error
+propagates. If usable evidence already exists, return
+`refresh_failed_using_local_data` and keep the published local window unchanged.
 
-initialized:
-    First successful ingestion for the company.
+## 5. Per-filing Arelle processing
 
-updated:
-    New selected filing accession(s) were discovered.
+`EvidenceIngestionService` deduplicates the selected accessions and processes them
+sequentially. Each filing receives its own processing-attempt record.
 
-checked_no_update:
-    SEC was checked, but no new selected accession was discovered.
-    Company Facts may still have been upserted.
-    Metrics and indicators may still have changed.
+For each filing:
 
-reused_local:
-    SEC retrieval was skipped.
-    Local label backfill, metric mapping, and indicator recalculation can occur.
+1. Build the extraction profile from the application version, extractor and
+   serialization versions, installed Arelle version, validation options, and pinned
+   SEC transformation-plugin hashes.
+2. Look for a snapshot with the same accession and extraction-profile hash.
+3. If found, verify every linked artifact's path, byte size, and SHA-256. Recreate a
+   missing `report-v1` evaluation from stored evidence when necessary, then mark the
+   attempt `reused` without SEC/Arelle processing.
+4. Otherwise create an attempt-private staging directory and Arelle cache.
+5. Open the filing URL with Arelle in online mode using the configured SEC User-Agent.
+   Validation is enabled with Calculation 1.0 deduplication (`c10d`), duplicate-fact
+   validation, warning-level buffered logs, and the pinned SEC transformation plugin.
+6. Before the Arelle session closes, capture the raw log and detach all exposed
+   recognized and undefined observations, concepts, labels, contexts, units,
+   dimensions, diagnostics, validation records, and supported calculation networks.
+7. Capture the exact primary Inline document plus loaded filing-owned Inline,
+   schema, and linkbase resources. External dependencies may remain recorded
+   references rather than archived files.
+8. Parse the retained primary document into required narrative-section records.
+9. Close Arelle, classify every observation under `report-v1`, install immutable
+   artifacts, and save the snapshot.
 
-refresh_failed_using_local_data:
-    A SecIngestionError occurred for an existing company.
-    The system falls back to local data and can recalculate local outputs.
+The current `evidence-v2` section set is:
 
-Do not interpret these statuses as precise counts of database inserts or updates.
+- 10-K: Items 1, 1A, 3, 7, 7A, and 8.
+- 10-Q: Part I Items 1, 2, 3, and 4; Part II Items 1 and 1A.
 
-5. TABLE UPDATE RULES
+Each required section records its status (`extracted`, `not_found`, or
+`parse_error`), ordered identity, source-document link, source range, normalized
+text, content hash when extracted, and diagnostic when unavailable. Missing or
+unparseable content is not stored as an empty disclosure.
 
-companies:
-- Identity: CIK.
-- Upsert metadata and refresh dates.
+## 6. Snapshot and artifact storage
 
-raw_xbrl_facts:
-- Identity includes CIK, taxonomy, concept, unit, start/end dates, fiscal year,
-  fiscal period, form, accession, frame, and dimensions.
-- Value is not part of the identity.
-- Matching identities update existing rows.
-- Different accessions or dimensional identities can produce separate rows.
-- Same-identity corrections overwrite the prior stored value.
-- This is not an immutable observation-version history.
-- Upsert counts represent submitted rows, not exclusively newly inserted rows.
+Artifacts are installed before the database snapshot transaction. Each object is
+named by its SHA-256 and is never overwritten with different bytes. Recoverable
+unreferenced objects may remain if a process stops between object installation and
+the SQLite commit.
 
-filings:
-- Identity: accession number.
-- Upsert metadata, document URL, local path, and active-window status.
+`EvidenceStore.save_snapshot` validates the bundle and then uses one short
+`BEGIN IMMEDIATE` transaction to:
 
-company_industry_labels:
-- Accepted assignments replace the company's stored label set.
-- Classification may reuse labels tied to the same relevant 10-K accession.
-- Missing credentials, unusable text, or rejected classification results fall
-  back to existing or source-controlled labels.
+1. register the company, filing, artifacts, and attempt links;
+2. recheck the snapshot identity;
+3. insert one immutable evidence snapshot when no identical snapshot exists;
+4. insert source documents and narrative sections;
+5. insert concepts, labels, contexts, dimensions, units, every fact occurrence,
+   diagnostics, validation messages/references, roles, networks, and calculation
+   arcs;
+6. insert the versioned report evaluation and fact roles/exclusion reasons; and
+7. mark the attempt `stored`.
 
-xbrl_concept_mappings:
-- Store governed mappings by concept, target metric, and scope.
-- Ingestion loads approved company, industry, and global mappings.
-- Company-specific mappings have precedence over broader scopes.
-- Normal ingestion does not automatically approve LLM recommendations.
+A repeated snapshot identity with a different semantic payload is an integrity
+error, not an update. A newer extraction profile creates another snapshot for the
+same accession. Older snapshots remain queryable.
 
-financial_metrics:
-- Identity includes company, metric, period, accession, and raw-fact ID.
-- Preserve source links to raw facts and filings.
-- Multiple observations for a metric-period can coexist.
-- Do not assume this table contains one canonical value per period.
+After a confirmed store/reuse result, the successful attempt's staging directory is
+removed. A failed filing is marked separately and cannot expose a partial snapshot.
+Earlier completed filings remain usable.
 
-financial_indicators:
-- Identity includes company, indicator, period, and formula version.
-- Store calculated values or explicit skipped outcomes.
-- Preserve source metric IDs, raw-fact IDs, and accessions.
-- Old rows are deactivated before fresh results are upserted.
-- Older metrics can remain available as prior-period calculation inputs.
+## 7. Run completion and active-window publication
 
-6. ACTIVE WINDOW AND RETENTION
+A processing run is:
 
-Current limits:
-- Latest five annual fiscal periods.
-- Latest twelve quarterly fiscal periods.
+- `succeeded` when every attempt stored or reused a snapshot;
+- `partial` when at least one attempt succeeded/reused and at least one failed; or
+- `failed` when no attempt succeeded or reused evidence.
 
-These limits apply to fiscal-period keys, not necessarily to exactly five
-annual documents or twelve quarterly documents.
+For an initial company, a fully failed run raises `IngestionError`. A partial initial
+run can publish usable filings; failed active filings remain visibly incomplete and
+force a later retry. For a stored company, a fully failed processing run returns the
+local-data fallback.
 
-During normal refresh:
-- Retain raw facts.
-- Retain filing metadata.
-- Retain historical metric and indicator rows.
-- Update active-window status.
-- Eligible inactive downloaded filing documents may be deleted.
+After a usable run, one transaction publishes the selected filing window:
 
-Do not describe the active window as deletion of all older financial history.
+1. upsert selected filing metadata;
+2. mark the company's older filing rows inactive without deleting their snapshots;
+3. assign annual and quarterly active-window ranks;
+4. update latest filing dates; and
+5. update annual and quarterly next-check dates.
 
-7. CONDITIONAL ARELLE ENRICHMENT
+The active window controls current selection, not evidence retention. Historical
+filing rows, snapshots, observations, sections, and artifact links remain stored.
 
-Arelle enrichment is considered when canonical targets remain missing.
+## 8. Refresh-date policy
 
-Extraction is triggered when:
-- New selected filing accessions exist; or
-- No Inline XBRL source facts have yet been stored for the company.
+A check is due when its date is missing or today is on/after the stored date.
 
-Process eligible active Inline filings, then upsert extracted facts and map again.
+After initial evidence or a new selected accession:
 
-The existing enrichment check is company-level. Do not assume there is a complete
-per-accession extraction-success or retry ledger.
+- 10-K: latest selected filing date plus 12 months.
+- Q1/Q2 10-Q: latest selected filing date plus 3 months.
+- Q3 10-Q: latest selected filing date plus 6 months.
 
-Dimensional facts must not automatically become consolidated totals.
+The calculated date moves backward to the preceding supported market day. A due
+check with no new selected accession moves that form's next check to the next
+supported market day after today. A failed attempt for a form makes that form due
+again immediately. These dates are polling heuristics, not guaranteed filing dates.
 
-8. RETRIEVAL-INDEX SYNCHRONIZATION
+## 9. Result statuses
 
-The separate entry point is:
+`initialized`
+The company had no usable evidence before this request and the run produced usable
+evidence.
 
-sync_company_retrieval_index(ticker, settings)
+`updated`
+SEC discovery selected at least one accession not previously known to the store.
 
-Build a fingerprint from:
-- Active filing accessions.
-- Filing document hashes.
-- Parser version.
-- Splitter/chunk configuration.
-- Embedding model.
+`checked_no_update`
+SEC was checked, but no newly selected accession was found. The run may still have
+created newer-profile snapshots, such as the `evidence-v2` section backfill.
 
-If the fingerprint is unchanged and the existing generation is valid:
-    Reuse the generation.
+`reused_local`
+The local active window was complete and current, so SEC and Arelle were skipped.
 
-Otherwise:
-    Build new chunks and index artifacts.
-    Replace filing_chunks and retrieval_index_state in one transaction.
-    Clean up older generation artifacts after successful publication.
+`refresh_failed_using_local_data`
+SEC discovery or filing processing failed for a company with usable stored evidence;
+the last published window remains available.
 
-If rebuilding fails before publication:
-    Preserve the previously stored complete generation.
+These statuses describe the request outcome. They are not database insert counts.
+Per-filing outcomes remain available on `result.run` when a processing run occurred.
 
-Do not assume financial ingestion automatically synchronizes retrieval.
+## 10. Progress, output, and concurrency
 
-9. FAILURE AND CONSISTENCY BOUNDARIES
+Progress callbacks cover initialization, local-state checks, SEC discovery,
+selection, every filing start/finish, active-window publication, and completion.
+The CLI writes these messages to stderr with `flush=True`. Final result summaries
+stay on stdout.
 
-- For a new company, SecIngestionError propagates because no local fallback exists.
-- For an existing company, that error returns the local-data fallback.
-- This does not imply that every possible exception is handled.
-- Financial repositories commit independently.
-- The overall financial ingestion is not one atomic company-level transaction.
-- Earlier writes can remain committed after a later failure.
-- Source facts absent from a subsequent response are not automatically deleted.
-- Metric upserts do not comprehensively retire rows that stop being emitted
-  after mapping changes.
-- Filing selection currently requests exact 10-K and 10-Q forms.
-- Do not assume amendment handling or exhaustive older-submissions traversal.
-- Schema initialization is additive, not an explicit versioned migration system.
-- Do not claim immutable evidence history, atomic financial snapshots, complete
-  incremental invalidation, or persisted LLM evidence packets without verifying
-  that those capabilities have been implemented.
+`sec-inline-financials` also prints elapsed time and the resolved evidence root,
+content-addressed object directory, and SQLite path after the ingestion command
+returns. `sec-inline-financials-ingest` and the module entry point omit those extra
+lines.
 
-RESPONSE REQUIREMENTS
+Selected filings run sequentially. Arelle sessions share process state and must not
+be run concurrently in threads.
 
-When explaining or evaluating this mechanism:
-- Present the workflow in execution order, starting with company existence.
-- Distinguish SEC retrieval, database writes, recalculation, and index rebuilding.
-- Cite current code locations.
-- Explicitly identify differences between this baseline and the current checkout.
-- Label recommendations as proposed changes, not existing behavior.
-- Do not implement improvements without an explicit implementation request.
+## 11. Recovery, backup, and integrity boundaries
+
+`recover_interrupted_attempts(store)` is available to mark attempts whose owner
+process is no longer alive. The current production CLI does not invoke it
+automatically, so operators should call it explicitly before manual recovery work.
+It does not delete staging directories, committed artifacts, or immutable objects.
+
+`audit_snapshot` verifies row/link counts, referenced artifact hashes and sizes, and
+SQLite foreign keys. `resolve_artifact` verifies an object again before returning its
+path. Missing or changed bytes are explicit integrity failures; evidence rows remain
+for diagnosis.
+
+Backup uses SQLite's backup interface plus every referenced immutable artifact and a
+hash manifest. Do not copy only an open `evidence.sqlite3` file because committed WAL
+state may be outside the main file.
+
+## 12. Report, mapping, and frontend boundaries
+
+Ingestion never renders or writes TXT reports. The separate in-memory report service
+remains callable through:
+
+```text
+sec_inline_financials.service.generate_reports(ticker, output_dir)
+sec_inline_financials.service.generate_report(ticker, years, output_dir)
+```
+
+There is currently no report console command. Both installed console scripts run
+ingestion.
+
+Direct Mapping, metric-result persistence, LLM evidence packets/recommendations,
+human review, API endpoints, evidence downloads, and the browser frontend remain
+planned. Ingestion does not populate those future layers and does not synchronize a
+retrieval index.
+
+## 13. Verification boundary
+
+The offline suite covers migrations, extraction, section parsing, immutable storage,
+artifact checks, replay, active-window refresh, partial failures, backup, and
+recovery. The opt-in pytest live test covers the older report extraction path only.
+Recorded production CLI runs have separately verified full 5/12 evidence-v2 windows
+and artifact audits, but a live update that discovers a genuinely new accession
+remains a separate acceptance case.
+
+Primary implementation references:
+
+- `src/sec_inline_financials/cli.py`
+- `src/sec_inline_financials/company_ingestion.py`
+- `src/sec_inline_financials/sec_client.py`
+- `src/sec_inline_financials/arelle_adapter.py`
+- `src/sec_inline_financials/evidence_extraction.py`
+- `src/sec_inline_financials/filing_sections.py`
+- `src/sec_inline_financials/evidence_ingestion.py`
+- `src/sec_inline_financials/storage/evidence_store.py`
+- `src/sec_inline_financials/storage/recovery.py`

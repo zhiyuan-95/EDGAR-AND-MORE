@@ -1,35 +1,39 @@
 # SEC Inline Financials
 
-An evidence-backed financial metric explorer built on SEC EDGAR Inline XBRL
-filings and Arelle. The current application is a local CLI that produces annual
-and quarterly concept-by-period TXT reports with fact, dimensional,
-reconciliation, calculation, and validation evidence.
+An evidence-backed financial data foundation built on SEC EDGAR Inline XBRL
+filings and Arelle. The current CLI ingests or refreshes a selected company,
+retains filing resources in a content-addressed archive, and stores complete
+detached filing evidence plus narrative sections in SQLite.
 
-The direction in [core.txt](core.txt) extends that foundation with retained
-filings and structured evidence, mapping for seven financial metrics, LLM
-recommendations for unresolved metrics, incremental updates, and a local
-frontend with evidence downloads and mapping review.
-See the [project proposal](docs/designs/project_proposal.txt) for the proposed
-design, alternatives, acceptance criteria, and open decisions.
+The next product layers are mapping for seven financial metrics, evidence-backed
+LLM recommendations for unresolved metrics, and a local frontend with evidence
+downloads and mapping review. [core.txt](core.txt) is the original requirements
+notebook; the [project proposal](docs/designs/project_proposal.txt) is the current
+project blueprint.
 
 ## Current status
 
 | Layer | Status |
 | --- | --- |
 | SEC discovery and Arelle report-period extraction | Implemented |
-| Annual and latest-12-filed-10-Q TXT reports with E/D/R evidence | Implemented |
-| Durable filing-resource archive and relational evidence storage | Implemented; live acceptance pending |
+| Annual and latest-12-filed-10-Q TXT report service with E/D/R evidence | Implemented; Python API only |
+| Durable filing-resource archive and relational evidence storage | Implemented; live 5/12 windows verified |
 | Direct metric mapping using `mapping.txt` | Planned for seven metrics |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
-| On-demand filing refresh and historical evidence retention | Implemented; live acceptance pending |
+| On-demand filing refresh and historical evidence retention | Implemented; new-accession live acceptance remains |
 | Frontend and evidence downloads | Planned |
 
-The report command still uses its in-memory result objects and remains unchanged.
-The separate evidence-ingestion path now detaches every Arelle-exposed observation,
-stores linked evidence in SQLite, and retains loaded filing resources in an
-immutable content-addressed archive. Direct Mapping, LLM integration, and the
-frontend remain later milestones. On-demand filing-window updates are implemented;
-mapping-result invalidation waits for the mapping milestone.
+The report service still uses its in-memory result objects and remains separate
+from storage. It is callable through `sec_inline_financials.service`, but there is
+currently no console entry point for TXT report generation. Both installed console
+commands run company ingestion; `sec-inline-financials` adds elapsed time and the
+resolved storage paths to the normal ingestion summary.
+
+The evidence-ingestion path detaches every Arelle-exposed observation, stores linked
+evidence in SQLite, and retains loaded filing resources in an immutable
+content-addressed archive. Direct Mapping, LLM integration, and the frontend remain
+later milestones. On-demand filing-window updates are implemented; mapping-result
+invalidation waits for the mapping milestone.
 
 The same filing snapshot also stores normalized narrative sections from the retained
 primary document. For a 10-K these are Items 1, 1A, 3, 7, 7A, and 8. For a 10-Q
@@ -37,8 +41,21 @@ they are Part I Items 1-4 and Part II Items 1 and 1A. Each required section reco
 its source range and content hash; missing or unparseable headings remain explicit
 instead of being treated as an empty disclosure.
 
-The existing report workflow is complete and remains explicitly invoked. The
-ingestion and update workflows do not generate reports automatically.
+The report workflow remains explicitly invoked through its Python API. Ingestion
+and update workflows do not generate reports automatically.
+
+## Documentation
+
+- [Project blueprint](docs/designs/project_proposal.txt): implemented foundation,
+  planned product layers, milestones, and completion criteria.
+- [Ingestion and update design](docs/designs/ingestAndUpdate.txt): refresh decisions,
+  Arelle processing, snapshot storage, failure behavior, and status semantics.
+- [Evidence-storage design](docs/designs/evidence-storage.md): detailed evidence,
+  schema, artifact, replay, and integrity contracts.
+- [Evidence-storage runbook](docs/evidence_storage_runbook.md): commands, runtime
+  paths, audits, recovery, backup, and verification.
+- [Planned frontend wireframe](docs/analyst_dashboard_wireframe.html) and
+  [static preview](docs/analyst_dashboard_wireframe.png): demo-only future interface.
 
 ## Planned metric workflow
 
@@ -147,35 +164,39 @@ this application.
 Ingest or update the retained five-annual/twelve-quarter evidence window:
 
 ```powershell
+uv run --no-sync sec-inline-financials AAPL
+```
+
+This primary command prints the final company/run summary, elapsed ingestion time,
+evidence root, artifact directory, and SQLite database path to stdout. Progress is
+written to stderr and flushed after every stage and filing.
+
+The lower-level aliases run the same ingestion without the final elapsed-time and
+path lines:
+
+```powershell
+uv run --no-sync sec-inline-financials-ingest AAPL
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
-After refreshing the editable install with `uv sync`, the equivalent packaged
-command is `uv run --no-sync sec-inline-financials-ingest AAPL`.
+The final summaries remain on stdout, so progress and machine-consumable results
+can be redirected independently.
 
-While ingestion runs, the command writes flushed stage and per-filing progress
-messages to stderr. The final company and run summaries remain on stdout so the
-two streams can be redirected independently.
+The first successful call returns `initialized`. Later calls first inspect local
+state. A complete current window returns `reused_local` without SEC or Arelle until
+an annual/quarterly check is due. `--force`, missing evidence, or an active legacy
+snapshot without profile-v2 narrative sections also triggers SEC discovery and
+filing processing. A check that finds no new selected accession returns
+`checked_no_update`, even when it created newer-profile snapshots. A new selected
+accession returns `updated`. If an SEC refresh fails for a company with stored
+evidence, the command returns `refresh_failed_using_local_data` and leaves the
+published local window unchanged.
 
-The first successful call returns `initialized`. Later calls use the stored
-next-check dates and return `reused_local` without SEC access until an annual or
-quarterly check is due. A due no-change check returns `checked_no_update`; a new
-selected accession returns `updated`. Use `--force` for an explicit SEC metadata
-check. If an SEC refresh fails for a company with stored evidence, the command
-returns `refresh_failed_using_local_data` and leaves the published local window
-unchanged.
-
-Generate the separate annual and quarterly TXT inspection reports:
+Generate the separate fixed five-annual/twelve-quarter TXT inspection reports
+through the Python API:
 
 ```powershell
-uv run --no-sync sec-inline-financials
-```
-
-Example interaction:
-
-```text
-Company ticker: AAPL
-Number of latest annual fiscal years: 5
+uv run --no-sync python -c "from pathlib import Path; from sec_inline_financials.service import generate_reports; print(generate_reports('AAPL', Path('output')))"
 ```
 
 The results are saved as:
@@ -207,9 +228,12 @@ concurrently in threads.
 - exclude `10-Q/A` amendments from the quarterly report;
 - process all selected filing documents with Arelle.
 
-The annual-history input accepts 1–20 years and controls only the 10-K report.
-The quarterly report requires 12 eligible 10-Q filings. Insufficient annual or
-quarterly history produces an error instead of a silently shortened report.
+The ingestion CLI accepts positive `--annual-count` and `--quarterly-count` values;
+the default is 5/12. The `generate_reports` convenience API is fixed at five annual
+and twelve quarterly filings. `generate_report(ticker, years, output_dir)` remains
+available for an annual-only inspection report with a chosen year count.
+Insufficient requested annual or quarterly history produces an error instead of a
+silently shortened result.
 Because companies do not file a 10-Q for Q4, these are the latest 12 filed 10-Q
 quarters, not 12 consecutive fiscal quarters.
 
@@ -281,15 +305,15 @@ $env:SEC10K_RUN_LIVE = "1"
 uv run --no-sync pytest tests/test_live_arelle.py -q
 ```
 
-The existing live test covers the earlier report extraction path. It does not
-verify durable storage. The storage suite uses deterministic local fixtures; the
-design's real 10-K, real 10-Q, and complete 5/12-window storage acceptance runs
-remain opt-in and must not be claimed from the report-only live test.
+The existing live pytest covers the report extraction path; it does not verify
+durable storage. Storage tests use deterministic local fixtures. Separate production
+CLI runs have verified complete 5/12 evidence-v2 windows, narrative sections, and
+artifact integrity. Those recorded runs do not replace the opt-in live test and do
+not prove every future new-accession refresh or the SEC's full EFM validation suite.
 
 ## Next implementation step
 
-Run the opt-in real-filing storage acceptance for one 10-K, one 10-Q, and then the
-selected 5/12 filing window. Once those evidence identities, artifact hashes, and
-restart audits are recorded, proceed to Milestone 2 Direct Mapping. Detailed
-mapping rules, model/provider choices, amendment handling, API contracts, and
-frontend screen design remain open decisions.
+Proceed to Milestone 2 Direct Mapping over stored evidence. A separate live
+acceptance should exercise an update that discovers a genuinely new accession.
+Detailed mapping precedence, model/provider choices, recommendation validation,
+API contracts, and frontend implementation remain open decisions.

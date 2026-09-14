@@ -1,7 +1,8 @@
 # Evidence Storage Runbook
 
-The evidence-storage implementation is a separate workflow from the existing TXT
-report command. Ingestion never renders or writes a Showcase Report.
+Evidence ingestion is separate from the in-memory TXT report service. Ingestion
+never renders or writes a Showcase Report. There is currently no report console
+command; both installed console commands run ingestion.
 
 ## Runtime location
 
@@ -23,36 +24,45 @@ Do not place the live database in the source checkout. Do not copy only an open
 
 ## Initialization and ingestion
 
-Create the store, apply packaged checksum-verified migrations, then construct the
-explicit ingestion module with the existing SEC and Arelle adapters:
+For the production request-triggered workflow, run:
 
-```python
-import os
-from pathlib import Path
-
-from sec_inline_financials.arelle_adapter import ArelleProcessor
-from sec_inline_financials.config import load_sec_user_agent
-from sec_inline_financials.evidence_ingestion import EvidenceIngestionService
-from sec_inline_financials.sec_client import SecClient
-from sec_inline_financials.storage.config import evidence_runtime_paths
-from sec_inline_financials.storage.evidence_store import EvidenceStore
-
-paths = evidence_runtime_paths(os.environ)
-store = EvidenceStore(paths.database, paths.artifacts)
-store.initialize()
-
-user_agent = load_sec_user_agent(working_directory=Path.cwd(), environment=os.environ)
-service = EvidenceIngestionService(
-    sec_client=SecClient(user_agent=user_agent),
-    processor=ArelleProcessor(user_agent=user_agent),
-    store=store,
-)
-outcome = service.ingest_company_window("MSFT", annual_count=5, quarterly_count=12)
+```powershell
+uv run --no-sync sec-inline-financials AAPL
 ```
 
-The result contains a run ID and one stored, reused, or failed outcome per filing.
-Each filing commits independently. A failed filing cannot expose a partial snapshot,
-and earlier completed filings remain usable.
+This command writes flushed stage/per-filing progress to stderr. It writes the final
+company and run summaries, elapsed time, evidence root, content-addressed artifact
+directory, and SQLite path to stdout. Use `--annual-count`, `--quarterly-count`, and
+`--force` when needed.
+
+The lower-level aliases omit the final timing and path lines:
+
+```powershell
+uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
+```
+
+For programmatic request-triggered ingestion, use the same public service as the
+CLI:
+
+```python
+from pathlib import Path
+
+from sec_inline_financials.company_ingestion import IngestionSettings, ingest_company
+
+settings = IngestionSettings.from_environment(working_directory=Path.cwd())
+result = ingest_company("MSFT", settings, progress=print)
+```
+
+The result is `reused_local` without SEC or Arelle when the active window is complete
+and its next-check dates are current. A due/forced request, missing evidence, or an
+active legacy snapshot without narrative sections enters SEC discovery and processes
+the selected window. Legacy `evidence-v1` snapshots remain immutable; the current
+profile stores new `evidence-v2` snapshots with `filing_sections`.
+
+When processing occurs, `result.run` contains a run ID and one stored, reused, or
+failed outcome per filing. Each filing commits independently. A failed filing cannot
+expose a partial snapshot, and earlier completed filings remain usable.
 
 ## Retrieval and integrity
 
@@ -69,10 +79,11 @@ database record is preserved for diagnosis.
 
 ## Restart recovery
 
-Call `recover_interrupted_attempts(store)` at application startup. It marks work
-owned by a process that is no longer alive as interrupted. It defers attempts owned
-by a live process and does not delete staging directories, committed artifacts, or
-unreferenced immutable objects.
+`recover_interrupted_attempts(store)` marks work owned by a process that is no longer
+alive as interrupted. The current production CLI does not call it automatically;
+invoke it explicitly before manual recovery work. It defers attempts owned by a live
+process and does not delete staging directories, committed artifacts, or unreferenced
+immutable objects.
 
 Retrying an accession with the same extraction profile reuses a compatible,
 artifact-verified snapshot. Reuse means local evidence was reused; it is not a
@@ -107,6 +118,10 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-Real SEC acceptance remains opt-in. Record accessions, extraction profiles, counts,
-hashes, elapsed time, database size, artifact size, largest text fact, and peak
-memory without recording `SEC_USER_AGENT` or other contact/configuration values.
+The opt-in pytest live test exercises the older report extraction path, not durable
+storage. Recorded production CLI runs have verified complete 5/12 evidence-v2
+windows, narrative-section persistence, and artifact audits. A live update that
+discovers a genuinely new accession remains a separate acceptance case. For every
+live acceptance, record accessions, extraction profiles, counts, hashes, elapsed
+time, database size, artifact size, largest text fact, and peak memory without
+recording `SEC_USER_AGENT` or other contact/configuration values.
