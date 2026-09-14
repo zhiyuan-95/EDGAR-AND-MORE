@@ -179,23 +179,23 @@ Structured extraction retains all observed filing facts, normalized SQLite evide
 
 This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. Repeated ingestion must be safe, failed imports must not leave partial results, and existing report behavior must remain unchanged.
 
-### Milestone 2: Direct Mapping — planned next
+### Milestone 2: Incremental evidence updates — implemented
+
+Company-access checks and manual refresh behavior process selected eligible filings, publish active windows, and retain historical evidence. Refreshing mapped metric results remains dependent on Milestone 2.
+
+This milestone proves that no-change checks reuse stored data, new filings extend the evidence history, failed updates preserve the last usable result, and updates never generate inspection reports automatically.
+
+### Milestone 3: Direct Mapping — planned next
 
 Implement period-by-period lookup for the seven Target Metrics using `mapping.txt` and persist each metric result with links to its filing evidence.
 
 This milestone proves that all seven metrics are evaluated for every supported period and that resolved, zero, missing, and conflicting states remain distinguishable without generating reports.
 
-### Milestone 3: LLM recommendations and human review — planned
+### Milestone 4: LLM recommendations and human review — planned
 
 Build target-specific evidence retrieval, store exact model requests and responses, and support approval or rejection of Mapping Recommendations.
 
 This milestone proves that each recommendation is reproducible, cites retained evidence, and cannot become an accepted mapping without user approval.
-
-### Milestone 4: Incremental evidence updates — implemented
-
-Company-access checks and manual refresh behavior process selected eligible filings, publish active windows, and retain historical evidence. Refreshing mapped metric results remains dependent on Milestone 2.
-
-This milestone proves that no-change checks reuse stored data, new filings extend the evidence history, failed updates preserve the last usable result, and updates never generate inspection reports automatically.
 
 ### Milestone 5: Local frontend — planned
 
