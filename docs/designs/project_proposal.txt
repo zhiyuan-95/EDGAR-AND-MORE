@@ -104,9 +104,9 @@ The current reports guide this storage model by demonstrating selected facts, di
 
 Mapping runs separately for each company, Target Metric, and exact annual or quarterly period.
 
-The first stage performs Direct Mapping using the exact concept names maintained in `mapping.txt`. When Direct Mapping cannot populate a metric, the backend retrieves relevant stored evidence and requests an LLM Mapping Recommendation.
+The first stage performs Direct Mapping using versioned runtime rules initially transcribed from the exact concept names in `mapping.txt`. When Direct Mapping cannot populate a metric, the backend retrieves relevant stored evidence and requests an LLM Mapping Recommendation.
 
-The recommendation is stored with its evidence and remains pending until the user approves or rejects it through the frontend. Detailed concept precedence, missing classifications, evidence selection, prompting, validation, and recommendation-reuse rules will be defined in the separate mapping design.
+The recommendation is stored with its evidence and remains pending until the user approves or rejects it through the frontend. Direct Mapping precedence, missing classifications, persistence, and verification are defined in the [Direct Mapping implementation plan](direct-mapping-implementation-plan.md); later recommendation prompting, validation, and reuse rules remain a separate design.
 
 ### 3.3 Update mechanism
 
