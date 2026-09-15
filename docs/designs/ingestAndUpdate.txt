@@ -262,15 +262,15 @@ state may be outside the main file.
 
 ## 12. Report, mapping, and frontend boundaries
 
-Ingestion never renders or writes TXT reports. The separate in-memory report service
-remains callable through:
+Ingestion never renders or writes TXT reports. Reports are generated only from
+stored snapshots through:
 
 ```text
-sec_inline_financials.service.generate_reports(ticker, output_dir)
-sec_inline_financials.service.generate_report(ticker, years, output_dir)
+uv run --no-sync python tests/test_company_ingestion.py
 ```
 
-There is currently no report console command. Both installed console scripts run
+The script prompts for the ticker, report type, and fiscal years, then writes a TXT
+report plus a complete-facts JSON export. Both installed console scripts run
 ingestion.
 
 Direct Mapping, metric-result persistence, LLM evidence packets/recommendations,
@@ -282,10 +282,10 @@ retrieval index.
 
 The offline suite covers migrations, extraction, section parsing, immutable storage,
 artifact checks, replay, active-window refresh, partial failures, backup, and
-recovery. The opt-in pytest live test covers the older report extraction path only.
-Recorded production CLI runs have separately verified full 5/12 evidence-v2 windows
-and artifact audits, but a live update that discovers a genuinely new accession
-remains a separate acceptance case.
+recovery. The opt-in pytest live test covers complete detached evidence extraction,
+not persistence or stored report replay. Recorded production CLI runs have
+separately verified full 5/12 evidence-v2 windows and artifact audits, but a live
+update that discovers a genuinely new accession remains a separate acceptance case.
 
 Primary implementation references:
 

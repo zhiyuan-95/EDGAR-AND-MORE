@@ -14,7 +14,6 @@ from sec_inline_financials.evidence_models import (
     RunOutcome,
 )
 from sec_inline_financials.models import Company, Filing
-from sec_inline_financials.service import SecGateway
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 from sec_inline_financials.storage.fingerprints import (
     canonical_json,
@@ -22,6 +21,16 @@ from sec_inline_financials.storage.fingerprints import (
     sha256_text,
     source_manifest_json,
 )
+
+
+class SecGateway(Protocol):
+    def resolve_company(self, ticker: str) -> Company: ...
+
+    def discover_annual_inline_filings(self, company: Company, *, count: int) -> list[Filing]: ...
+
+    def discover_quarterly_inline_filings(
+        self, company: Company, *, count: int
+    ) -> list[Filing]: ...
 
 
 class EvidenceProcessor(Protocol):

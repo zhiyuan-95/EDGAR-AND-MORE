@@ -1,11 +1,11 @@
 import os
 from datetime import date
-from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from sec_inline_financials.arelle_adapter import ArelleProcessor
-from sec_inline_financials.models import Filing
+from sec_inline_financials.models import Company, Filing
 
 pytestmark = pytest.mark.skipif(
     os.getenv("SEC10K_RUN_LIVE") != "1",
@@ -13,7 +13,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_arelle_extracts_and_reconciles_apples_2025_annual_numeric_facts() -> None:
+def test_arelle_extracts_apples_2025_complete_filing_evidence(tmp_path: Path) -> None:
+    company = Company(ticker="AAPL", cik="0000320193", name="Apple Inc.")
     filing = Filing(
         accession="0000320193-25-000079",
         filing_date=date(2025, 10, 31),
@@ -23,12 +24,17 @@ def test_arelle_extracts_and_reconciles_apples_2025_annual_numeric_facts() -> No
         url=("https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"),
     )
 
-    result = ArelleProcessor(user_agent=os.environ["SEC_USER_AGENT"]).process(filing)
+    result = ArelleProcessor(
+        user_agent=os.environ["SEC_USER_AGENT"],
+        cache_directory=tmp_path / "cache" / "arelle",
+    ).extract_evidence(company, filing, tmp_path / "capture")
 
-    facts = {fact.concept: fact for fact in result.primary_facts}
     assert result.fiscal_year == 2025
-    assert len(facts) > 100
-    assert facts["us-gaap:Assets"].value == Decimal("359241000000")
-    assert facts["us-gaap:Assets"].period_end == date(2025, 9, 27)
-    assert facts["us-gaap:Assets"].arelle_validity == "valid"
+    assert len(result.observations) > 100
+    assert any(
+        observation.display_qname == "us-gaap:Assets"
+        and observation.typed_value_text == "359241000000"
+        for observation in result.observations
+    )
     assert len(result.calculation_relationships) > 100
+    assert result.source_documents

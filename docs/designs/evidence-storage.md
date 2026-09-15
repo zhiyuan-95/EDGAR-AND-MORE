@@ -24,10 +24,10 @@ was considered and deferred: that would additionally require a complete dependen
 archive, URL resolution, and an independently tested offline execution mechanism.
 Reopening stored results is the acceptance criterion here.
 
-The in-memory inspection-report service and its SEC/Arelle workflow stay separate.
-Storage ingestion never writes TXT reports. Tests may explicitly pass a database
-projection to the existing renderer to prove equivalence. There is currently no
-TXT-report console command; both installed console scripts run ingestion.
+Storage ingestion never writes TXT reports. The interactive report script selects
+stored snapshots, projects their persisted evaluations, and passes the results to
+the renderer without SEC or Arelle access. Both installed console scripts run
+ingestion.
 
 ### Scope across the proposal's milestones
 
@@ -48,18 +48,16 @@ derivation, a scheduler, a frontend, or a new financial-metric policy.
 
 ## 2. Implemented code seams
 
-The implementation preserves the original report models while adding these storage seams:
+The implementation uses these storage-to-report seams:
 
-| Code seam | Report behavior | Implemented storage behavior |
-|---|---|---|
-| `arelle_adapter.py::_numeric_facts` | Drops nonnumeric, nil, invalid, missing-context/unit and non-report-period observations | `extract_evidence` detaches complete observations before any report eligibility decisions |
-| `models.py::Fact` | Requires a `Decimal`, a unit, and a period end | The report model remains; `evidence_models.py` provides nullable detached observation records |
-| `arelle_adapter.py::_process` | Raises when no selected primary or dimensional report facts remain | Storage can succeed with zero report-eligible facts when complete extraction succeeds |
-| `reconcile.py::reconcile_primary_facts` | Collapses exact report duplicates; records conflicts using context IDs and summary text | Every occurrence is retained and selections/conflicts link to permanent fact IDs |
-| Validation extraction | Keeps level, code, and normalized message text from warning-level logs | Raw log output, configured log policy, and structured references are retained |
-| Calculation extraction | Returns a deduplicated set of role/parent/child/weight tuples | Supported effective relationship occurrences and source provenance are retained |
-| `service.py::ReportApplication` | Produces annual/quarterly reports from in-memory results | The workflow remains separate; `EvidenceIngestionService` owns durable ingestion |
-| `report.py` | Formats detached read models and assigns E/D/R labels | Reuse in compatibility tests; E/D/R never become database keys |
+| Code seam | Responsibility |
+|---|---|
+| `arelle_adapter.py::extract_evidence` | Runs Arelle and hands the open filing model to complete evidence detachment |
+| `evidence_models.py::ObservationRecord` | Retains nullable observed-fact data without forcing report eligibility |
+| `evidence_classification.py::classify_report` | Applies versioned eligibility, duplicate selection, and conflict classification |
+| `storage/report_projection.py::project_stored_report` | Rebuilds annual or quarterly renderer models from one stored snapshot and evaluation |
+| `report.py` | Formats projected read models and assigns presentation-only E/D/R labels |
+| `tests/test_company_ingestion.py` | Selects fiscal years, renders stored evaluations, and exports complete fact occurrences |
 
 The locked Arelle package is 2.41.7. Its `model.facts` contains top-level facts;
 `factsInInstance` includes nested facts and is implemented as a set. Complete
@@ -917,7 +915,7 @@ uv run --no-sync mypy src
 
 Live pytest acceptance remains opt-in using the existing SEC configuration mechanism.
 Do not place credentials or user-agent contact information in acceptance artifacts.
-As of 2026-09-14, the local suite passes with 39 tests and one skipped live test.
+As of 2026-09-14, the local suite passes with 25 tests and one skipped live test.
 Recorded production CLI runs contain successful full 5/12 evidence-v2 windows, and
 current snapshot audits verify their linked artifact hashes and foreign keys. These
 runs do not prove a future new-accession refresh or SEC EFM-complete validation.
@@ -930,11 +928,10 @@ snapshot fingerprints, and immutable captured company/filing metadata. No materi
 review concerns remain. This is document review, not implementation verification.
 
 The owner selected a fresh proposal-based plan and stored-evidence replay. The
-implementation now lives in `evidence_models.py`, `evidence_extraction.py`,
+implementation lives in `evidence_models.py`, `evidence_extraction.py`,
 `evidence_classification.py`, `evidence_ingestion.py`, and the `storage` package.
-The in-memory report service does not depend on these modules. Its renderer and
-filenames remain available through the Python API, but its former console route now
-runs ingestion.
+The interactive report script reuses `report.py` only after
+`project_stored_report` reconstructs renderer models from persisted evidence.
 
 Local fixtures verify exact source capture, undefined/nested observation detachment,
 narrative-section parsing, and snapshot replay. Recorded real-filing 5/12 runs verify

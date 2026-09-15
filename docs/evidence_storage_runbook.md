@@ -1,8 +1,9 @@
 # Evidence Storage Runbook
 
-Evidence ingestion is separate from the in-memory TXT report service. Ingestion
-never renders or writes a Showcase Report. There is currently no report console
-command; both installed console commands run ingestion.
+Evidence ingestion is separate from stored-evidence report generation. Ingestion
+never renders or writes a Showcase Report. Reports are generated interactively with
+`uv run --no-sync python tests/test_company_ingestion.py`; both installed console
+commands run ingestion.
 
 ## Runtime location
 
@@ -118,10 +119,11 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-The opt-in pytest live test exercises the older report extraction path, not durable
-storage. Recorded production CLI runs have verified complete 5/12 evidence-v2
-windows, narrative-section persistence, and artifact audits. A live update that
-discovers a genuinely new accession remains a separate acceptance case. For every
-live acceptance, record accessions, extraction profiles, counts, hashes, elapsed
-time, database size, artifact size, largest text fact, and peak memory without
-recording `SEC_USER_AGENT` or other contact/configuration values.
+The opt-in pytest live test exercises complete detached evidence extraction, not
+database persistence or stored report replay. Recorded production CLI runs have
+verified complete 5/12 evidence-v2 windows, narrative-section persistence, and
+artifact audits. A live update that discovers a genuinely new accession remains a
+separate acceptance case. For every live acceptance, record accessions, extraction
+profiles, counts, hashes, elapsed time, database size, artifact size, largest text
+fact, and peak memory without recording `SEC_USER_AGENT` or other
+contact/configuration values.

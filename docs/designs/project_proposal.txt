@@ -165,9 +165,9 @@ This workflow does not generate a TXT inspection report.
 
 ### 4.3 Inspection report generation
 
-1. The project owner explicitly calls `sec_inline_financials.service.generate_reports` or `generate_report`.
-2. The current SEC/Arelle report workflow runs unchanged.
-3. The resulting annual and quarterly TXT files are used for manual inspection.
+1. The project owner explicitly runs `uv run --no-sync python tests/test_company_ingestion.py`.
+2. The script selects stored annual or complete Q1-Q3 quarterly fiscal years and replays their persisted `report-v1` evaluations without SEC or Arelle access.
+3. The resulting TXT report and complete-facts JSON file are used for manual inspection.
 
 This workflow remains separate from normal ingestion, updates, and frontend use.
 
@@ -177,7 +177,7 @@ This workflow remains separate from normal ingestion, updates, and frontend use.
 
 Structured extraction retains all observed filing facts, normalized SQLite evidence, artifact tracking, report replay, and profile-v2 narrative sections.
 
-This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. Repeated ingestion must be safe, failed imports must not leave partial results, and existing report behavior must remain unchanged.
+This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. Repeated ingestion must be safe, failed imports must not leave partial results, and stored report replay must preserve the report behavior.
 
 ### Milestone 2: Incremental evidence updates — implemented
 

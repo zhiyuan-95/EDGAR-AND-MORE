@@ -15,19 +15,19 @@ project blueprint.
 
 | Layer | Status |
 | --- | --- |
-| SEC discovery and Arelle report-period extraction | Implemented |
-| Annual and latest-12-filed-10-Q TXT report service with E/D/R evidence | Implemented; Python API only |
+| SEC discovery and complete Arelle evidence extraction | Implemented |
+| Stored-evidence annual/quarterly TXT and complete-facts JSON reports | Implemented; interactive script |
 | Durable filing-resource archive and relational evidence storage | Implemented; live 5/12 windows verified |
 | Direct metric mapping using `mapping.txt` | Planned for seven metrics |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
 | On-demand filing refresh and historical evidence retention | Implemented; new-accession live acceptance remains |
 | Frontend and evidence downloads | Planned |
 
-The report service still uses its in-memory result objects and remains separate
-from storage. It is callable through `sec_inline_financials.service`, but there is
-currently no console entry point for TXT report generation. Both installed console
-commands run company ingestion; `sec-inline-financials` adds elapsed time and the
-resolved storage paths to the normal ingestion summary.
+Reports are generated only from stored snapshots and their persisted `report-v1`
+evaluations. The interactive script in `tests/test_company_ingestion.py` does not
+contact the SEC or open Arelle. Both installed console commands run company
+ingestion; `sec-inline-financials` adds elapsed time and the resolved storage paths
+to the normal ingestion summary.
 
 The evidence-ingestion path detaches every Arelle-exposed observation, stores linked
 evidence in SQLite, and retains loaded filing resources in an immutable
@@ -41,8 +41,8 @@ they are Part I Items 1-4 and Part II Items 1 and 1A. Each required section reco
 its source range and content hash; missing or unparseable headings remain explicit
 instead of being treated as an empty disclosure.
 
-The report workflow remains explicitly invoked through its Python API. Ingestion
-and update workflows do not generate reports automatically.
+The report workflow remains explicitly invoked through the interactive script.
+Ingestion and update workflows do not generate reports automatically.
 
 ## Documentation
 
@@ -192,28 +192,27 @@ accession returns `updated`. If an SEC refresh fails for a company with stored
 evidence, the command returns `refresh_failed_using_local_data` and leaves the
 published local window unchanged.
 
-Generate the separate fixed five-annual/twelve-quarter TXT inspection reports
-through the Python API:
+Generate a report from stored evidence:
 
 ```powershell
-uv run --no-sync python -c "from pathlib import Path; from sec_inline_financials.service import generate_reports; print(generate_reports('AAPL', Path('output')))"
+uv run --no-sync python tests/test_company_ingestion.py
 ```
 
-The results are saved as:
+The script prompts for a ticker, an annual or quarterly report, and one or more
+available fiscal years. Quarterly choices are limited to years with stored Q1, Q2,
+and Q3 snapshots. It writes both the rendered report and every retrieved fact
+occurrence:
 
 ```text
-output/AAPL_latest_5_years.txt
-output/AAPL_latest_12_10q_quarters.txt
+output/<TICKER>_<annual|quarterly>_<YEARS>.txt
+output/<TICKER>_<annual|quarterly>_<YEARS>_all_facts.json
 ```
 
-Each report is written atomically. The annual report is saved first, so a later
-quarterly discovery or processing failure can leave a completed annual report.
+Report generation reads SQLite only. It uses the newest stored snapshot for each
+selected annual year or quarter and fails explicitly when the required `report-v1`
+evaluation is absent.
 
-The CLI reports progress because Arelle processes the selected filings
-sequentially. Arelle sessions use shared process state and must not be run
-concurrently in threads.
-
-## Meaning of the request
+## Meaning of an ingestion request
 
 `AAPL` plus `5` means:
 
@@ -229,11 +228,8 @@ concurrently in threads.
 - process all selected filing documents with Arelle.
 
 The ingestion CLI accepts positive `--annual-count` and `--quarterly-count` values;
-the default is 5/12. The `generate_reports` convenience API is fixed at five annual
-and twelve quarterly filings. `generate_report(ticker, years, output_dir)` remains
-available for an annual-only inspection report with a chosen year count.
-Insufficient requested annual or quarterly history produces an error instead of a
-silently shortened result.
+the default is 5/12. Insufficient requested annual or quarterly history produces an
+error instead of a silently shortened result.
 Because companies do not file a 10-Q for Q4, these are the latest 12 filed 10-Q
 quarters, not 12 consecutive fiscal quarters.
 
@@ -268,8 +264,8 @@ Arelle, not from the SEC Company Facts API.
 - Arelle calculation relationships and warning/error messages follow the fact
   evidence. Calculation 1.0 validation runs in deduplicating mode (`c10d`).
 
-This application validates XBRL and calculation relationships with Arelle. It
-does not claim to run the SEC's complete EDGAR Filer Manual validation suite.
+Ingestion validates XBRL and calculation relationships with Arelle. It does not
+claim to run the SEC's complete EDGAR Filer Manual validation suite.
 
 These filters also limit planned mapping coverage. Six- or nine-month cash-flow
 facts cannot fill discrete-quarter Operating Cash Flow or CapEx cells, and
@@ -305,11 +301,12 @@ $env:SEC10K_RUN_LIVE = "1"
 uv run --no-sync pytest tests/test_live_arelle.py -q
 ```
 
-The existing live pytest covers the report extraction path; it does not verify
-durable storage. Storage tests use deterministic local fixtures. Separate production
-CLI runs have verified complete 5/12 evidence-v2 windows, narrative sections, and
-artifact integrity. Those recorded runs do not replace the opt-in live test and do
-not prove every future new-accession refresh or the SEC's full EFM validation suite.
+The live pytest covers complete evidence extraction into a detached bundle; it does
+not persist that bundle or exercise stored report replay. Storage tests use
+deterministic local fixtures. Separate production CLI runs have verified complete
+5/12 evidence-v2 windows, narrative sections, and artifact integrity. Those recorded
+runs do not replace the opt-in live test and do not prove every future new-accession
+refresh or the SEC's full EFM validation suite.
 
 ## Next implementation step
 

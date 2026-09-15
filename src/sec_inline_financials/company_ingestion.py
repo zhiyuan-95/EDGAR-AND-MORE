@@ -13,11 +13,14 @@ from typing import Literal
 from sec_inline_financials.arelle_adapter import ArelleProcessor
 from sec_inline_financials.config import load_sec_user_agent
 from sec_inline_financials.errors import DiscoveryError, ExplorerError, IngestionError
-from sec_inline_financials.evidence_ingestion import EvidenceIngestionService, EvidenceProcessor
+from sec_inline_financials.evidence_ingestion import (
+    EvidenceIngestionService,
+    EvidenceProcessor,
+    SecGateway,
+)
 from sec_inline_financials.evidence_models import RunOutcome, StoredCompanyState
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.sec_client import SecClient
-from sec_inline_financials.service import SecGateway
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
