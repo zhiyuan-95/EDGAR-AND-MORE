@@ -10,6 +10,7 @@ from typing import Literal
 
 from sec_inline_financials.errors import (
     FilingMetadataError,
+    MappingInputError,
     SnapshotMismatchError,
 )
 from sec_inline_financials.evidence_models import (
@@ -32,6 +33,7 @@ from sec_inline_financials.evidence_models import (
     ReconciliationIssueRecord,
     ReportEvaluation,
     ReportEvaluationRef,
+    ReportKind,
     SnapshotRef,
     SourceDocumentRecord,
     StoredCompanyState,
@@ -41,6 +43,17 @@ from sec_inline_financials.evidence_models import (
     ValidationRecord,
     ValidationReferenceRecord,
 )
+from sec_inline_financials.mapping_models import (
+    TARGET_METRIC_KEYS,
+    ConceptCandidate,
+    ConceptIdentity,
+    MappingFactInput,
+    MappingSnapshotInput,
+    MetricEvaluationRef,
+    MetricWindowEvaluation,
+    active_window_hash,
+)
+from sec_inline_financials.mapping_rules import namespace_family
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.storage.artifacts import ArtifactStore
 from sec_inline_financials.storage.database import EvidenceDatabase
@@ -123,7 +136,7 @@ class EvidenceStore:
                     "SELECT f.accession FROM filings AS f "
                     "WHERE f.company_id = ? AND f.is_active = 1 "
                     "AND NOT EXISTS ("
-                    " SELECT 1 FROM evidence_snapshots AS s WHERE s.filing_id = f.id"
+                    " SELECT 1 FROM active_filing_snapshots AS afs WHERE afs.filing_id = f.id"
                     ") ORDER BY CASE f.form WHEN '10-K' THEN 0 ELSE 1 END, "
                     "f.active_window_rank, f.accession",
                     (company_id,),
@@ -135,9 +148,9 @@ class EvidenceStore:
                     "SELECT f.accession FROM filings AS f "
                     "WHERE f.company_id = ? AND f.is_active = 1 "
                     "AND NOT EXISTS ("
-                    " SELECT 1 FROM evidence_snapshots AS s "
-                    " JOIN filing_sections AS fs ON fs.snapshot_id = s.id "
-                    " WHERE s.filing_id = f.id"
+                    " SELECT 1 FROM active_filing_snapshots AS afs "
+                    " JOIN filing_sections AS fs ON fs.snapshot_id = afs.snapshot_id "
+                    " WHERE afs.filing_id = f.id"
                     ") ORDER BY CASE f.form WHEN '10-K' THEN 0 ELSE 1 END, "
                     "f.active_window_rank, f.accession",
                     (company_id,),
@@ -176,6 +189,7 @@ class EvidenceStore:
         *,
         annual: list[Filing],
         quarterly: list[Filing],
+        snapshot_ids: dict[str, int],
         next_check_date_10k: date,
         next_check_date_10q: date,
     ) -> None:
@@ -189,6 +203,12 @@ class EvidenceStore:
             raise FilingMetadataError("A filing window may not contain duplicate accessions.")
         if not annual or not quarterly:
             raise FilingMetadataError("A filing window requires annual and quarterly filings.")
+        bindings = snapshot_ids
+        unknown_bindings = set(bindings).difference(accessions)
+        if unknown_bindings:
+            raise FilingMetadataError(
+                "Snapshot bindings must belong to the published filing window."
+            )
 
         with self.database.write_transaction() as connection:
             company_id = self._upsert_company(connection, company)
@@ -211,6 +231,26 @@ class EvidenceStore:
                     (rank, filing_ids[filing.accession]),
                 )
             connection.execute(
+                "DELETE FROM active_filing_snapshots WHERE filing_id IN "
+                "(SELECT id FROM filings WHERE company_id = ?)",
+                (company_id,),
+            )
+            for accession, snapshot_id in bindings.items():
+                filing_id = filing_ids[accession]
+                snapshot = connection.execute(
+                    "SELECT 1 FROM evidence_snapshots WHERE id = ? AND filing_id = ?",
+                    (snapshot_id, filing_id),
+                ).fetchone()
+                if snapshot is None:
+                    raise FilingMetadataError(
+                        f"Snapshot {snapshot_id} does not belong to accession {accession}."
+                    )
+                connection.execute(
+                    "INSERT INTO active_filing_snapshots(filing_id, snapshot_id, published_at) "
+                    "VALUES (?, ?, ?)",
+                    (filing_id, snapshot_id, _now()),
+                )
+            connection.execute(
                 "UPDATE companies SET latest_10k_filing_date = ?, "
                 "latest_10q_filing_date = ?, next_check_date_10k = ?, "
                 "next_check_date_10q = ?, updated_at = ? WHERE id = ?",
@@ -222,6 +262,446 @@ class EvidenceStore:
                     _now(),
                     company_id,
                 ),
+            )
+
+    def list_mapping_inputs(
+        self,
+        ticker: str,
+        report_kind: ReportKind,
+        report_rule_version: str,
+    ) -> tuple[MappingSnapshotInput, ...]:
+        """Load the exact active snapshot/report bindings for one mapping window."""
+        requested = ticker.strip().upper()
+        form = "10-K" if report_kind == "annual" else "10-Q"
+        with self.database.connection() as connection:
+            company = connection.execute(
+                "SELECT id, cik FROM companies WHERE upper(ticker) = ?", (requested,)
+            ).fetchone()
+            if company is None:
+                raise MappingInputError(f"No stored company data found for {requested}.")
+            rows = connection.execute(
+                "SELECT f.id AS filing_id, f.accession, f.form, f.report_date, "
+                "f.active_window_rank, afs.snapshot_id, s.payload_hash, "
+                "re.id AS report_evaluation_id, re.rule_version "
+                "FROM filings AS f "
+                "LEFT JOIN active_filing_snapshots AS afs ON afs.filing_id = f.id "
+                "LEFT JOIN evidence_snapshots AS s ON s.id = afs.snapshot_id "
+                "LEFT JOIN report_evaluations AS re ON re.snapshot_id = s.id "
+                "AND re.report_kind = ? AND re.rule_version = ? "
+                "WHERE f.company_id = ? AND f.form = ? AND f.is_active = 1 "
+                "ORDER BY f.active_window_rank, f.accession",
+                (report_kind, report_rule_version, int(company["id"]), form),
+            ).fetchall()
+            if not rows:
+                raise MappingInputError(
+                    f"No active {report_kind} filing window is stored for {requested}."
+                )
+            result: list[MappingSnapshotInput] = []
+            for row in rows:
+                if row["snapshot_id"] is None:
+                    raise MappingInputError(
+                        f"Active filing {row['accession']} has no published evidence snapshot."
+                    )
+                if row["report_evaluation_id"] is None:
+                    raise MappingInputError(
+                        f"Snapshot {row['snapshot_id']} has no {report_kind} "
+                        f"{report_rule_version} evaluation."
+                    )
+                snapshot_id = int(row["snapshot_id"])
+                self._verify_snapshot_artifacts(connection, snapshot_id)
+                result.append(
+                    MappingSnapshotInput(
+                        snapshot_id=snapshot_id,
+                        filing_id=int(row["filing_id"]),
+                        accession=str(row["accession"]),
+                        form=str(row["form"]),
+                        report_date=date.fromisoformat(str(row["report_date"])),
+                        active_window_rank=int(row["active_window_rank"]),
+                        payload_hash=str(row["payload_hash"]),
+                        report_evaluation_id=int(row["report_evaluation_id"]),
+                        source_report_rule_version=str(row["rule_version"]),
+                        company_cik=str(company["cik"]),
+                    )
+                )
+            return tuple(result)
+
+    def load_mapping_candidate_facts(
+        self,
+        snapshots: tuple[MappingSnapshotInput, ...],
+        concept_candidates: tuple[ConceptCandidate, ...],
+    ) -> tuple[MappingFactInput, ...]:
+        """Load all configured candidate observations in one bounded query."""
+        if not snapshots or not concept_candidates:
+            return ()
+        snapshot_pairs = [(item.snapshot_id, item.report_evaluation_id) for item in snapshots]
+        pair_clause = " OR ".join("(f.snapshot_id = ? AND re.id = ?)" for _ in snapshot_pairs)
+        local_names = tuple(sorted({candidate.local_name for candidate in concept_candidates}))
+        local_clause = ", ".join("?" for _ in local_names)
+        parameters: list[object] = [
+            value for snapshot_pair in snapshot_pairs for value in snapshot_pair
+        ]
+        parameters.extend(local_names)
+        sql = (
+            "SELECT f.id AS fact_id, f.snapshot_id, f.typed_value_text, "
+            "c.namespace_uri, c.local_name, sc.display_qname, sc.period_type, "
+            "ctx.period_kind, ctx.entity_identifier, ctx.period_start_date, "
+            "ctx.period_end_date, frs.evidence_role, fer.reason_order, "
+            "fer.reason_code, fer.detail, ri.reason_code AS conflict_reason_code, "
+            "CASE WHEN f.unit_id IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM unit_measures AS numerator "
+            "WHERE numerator.unit_id = f.unit_id AND numerator.side = 'numerator' "
+            "AND numerator.namespace_uri = 'http://www.xbrl.org/2003/iso4217') "
+            "AND NOT EXISTS (SELECT 1 FROM unit_measures AS denominator "
+            "WHERE denominator.unit_id = f.unit_id AND denominator.side = 'denominator') "
+            "THEN 'monetary' ELSE NULL END AS unit_family "
+            "FROM facts AS f "
+            "JOIN concepts AS c ON c.id = f.concept_id "
+            "JOIN snapshot_concepts AS sc ON sc.snapshot_id = f.snapshot_id "
+            "AND sc.concept_id = f.concept_id "
+            "LEFT JOIN contexts AS ctx ON ctx.snapshot_id = f.snapshot_id "
+            "AND ctx.id = f.context_id "
+            "JOIN fact_report_status AS frs ON frs.snapshot_id = f.snapshot_id "
+            "AND frs.fact_id = f.id "
+            "JOIN report_evaluations AS re ON re.snapshot_id = f.snapshot_id "
+            "AND re.id = frs.evaluation_id "
+            "LEFT JOIN fact_exclusion_reasons AS fer ON fer.evaluation_id = re.id "
+            "AND fer.snapshot_id = f.snapshot_id AND fer.fact_id = f.id "
+            "LEFT JOIN reconciliation_issue_facts AS rif ON rif.snapshot_id = f.snapshot_id "
+            "AND rif.fact_id = f.id "
+            "LEFT JOIN reconciliation_issues AS ri ON ri.id = rif.issue_id "
+            "AND ri.evaluation_id = re.id "
+            f"WHERE ({pair_clause}) AND c.local_name IN ({local_clause}) "
+            "ORDER BY f.snapshot_id, f.source_order, fer.reason_order, ri.issue_order"
+        )
+        with self.database.connection() as connection:
+            rows = connection.execute(sql, parameters).fetchall()
+        records: dict[int, dict[str, object]] = {}
+        for row in rows:
+            fact_id = int(row["fact_id"])
+            record = records.setdefault(
+                fact_id,
+                {
+                    "row": row,
+                    "exclusion_reasons": [],
+                    "conflict_reason_codes": [],
+                },
+            )
+            exclusion_reasons = record["exclusion_reasons"]
+            if row["reason_code"] is not None:
+                reason = (str(row["reason_code"]), str(row["detail"]))
+                if isinstance(exclusion_reasons, list) and reason not in exclusion_reasons:
+                    exclusion_reasons.append(reason)
+            conflict_reason_codes = record["conflict_reason_codes"]
+            if row["conflict_reason_code"] is not None:
+                code = str(row["conflict_reason_code"])
+                if isinstance(conflict_reason_codes, list) and code not in conflict_reason_codes:
+                    conflict_reason_codes.append(code)
+
+        result: list[MappingFactInput] = []
+        for record in records.values():
+            row = record["row"]
+            if not isinstance(row, sqlite3.Row):
+                raise RuntimeError("Unexpected mapping query result.")
+            result.append(
+                MappingFactInput(
+                    snapshot_id=int(row["snapshot_id"]),
+                    fact_id=int(row["fact_id"]),
+                    concept=ConceptIdentity(
+                        namespace_family=namespace_family(str(row["namespace_uri"])),
+                        namespace_uri=str(row["namespace_uri"]),
+                        local_name=str(row["local_name"]),
+                        display_qname=str(row["display_qname"]),
+                    ),
+                    concept_period_type=(
+                        str(row["period_type"]) if row["period_type"] is not None else None
+                    ),
+                    context_period_kind=(
+                        str(row["period_kind"]) if row["period_kind"] is not None else "unknown"
+                    ),
+                    entity_identifier=(
+                        str(row["entity_identifier"])
+                        if row["entity_identifier"] is not None
+                        else None
+                    ),
+                    period_start_date=_optional_date(row["period_start_date"]),
+                    period_end_date=_optional_date(row["period_end_date"]),
+                    unit_family=(
+                        str(row["unit_family"]) if row["unit_family"] is not None else None
+                    ),
+                    typed_value_text=(
+                        str(row["typed_value_text"])
+                        if row["typed_value_text"] is not None
+                        else None
+                    ),
+                    evidence_role=str(row["evidence_role"]),  # type: ignore[arg-type]
+                    exclusion_reasons=tuple(record["exclusion_reasons"]),  # type: ignore[arg-type]
+                    conflict_reason_codes=tuple(record["conflict_reason_codes"]),  # type: ignore[arg-type]
+                )
+            )
+        return tuple(result)
+
+    def find_metric_evaluation(
+        self,
+        ticker: str,
+        report_kind: ReportKind,
+        *,
+        definition_version: str,
+        mapping_rule_hash: str,
+        source_report_rule_version: str,
+        active_window_hash_value: str,
+    ) -> MetricEvaluationRef | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT me.*, "
+                "(SELECT count(*) FROM metric_results AS mr "
+                " WHERE mr.evaluation_id = me.id AND mr.status = 'reported') AS reported_count, "
+                "(SELECT count(*) FROM metric_results AS mr "
+                " WHERE mr.evaluation_id = me.id AND mr.status = 'missing') AS missing_count "
+                "FROM metric_evaluations AS me JOIN companies AS c ON c.id = me.company_id "
+                "WHERE upper(c.ticker) = upper(?) AND me.report_kind = ? "
+                "AND me.definition_version = ? AND me.mapping_rule_hash = ? "
+                "AND me.source_report_rule_version = ? AND me.active_window_hash = ?",
+                (
+                    ticker.strip(),
+                    report_kind,
+                    definition_version,
+                    mapping_rule_hash,
+                    source_report_rule_version,
+                    active_window_hash_value,
+                ),
+            ).fetchone()
+            return (
+                None if row is None else self._metric_evaluation_ref(row, reused=True, stale=False)
+            )
+
+    def save_and_publish_metric_evaluation(
+        self,
+        ticker: str,
+        evaluation: MetricWindowEvaluation,
+        *,
+        expected_active_window_hash: str,
+    ) -> MetricEvaluationRef:
+        self._validate_metric_evaluation(evaluation, expected_active_window_hash)
+        with self.database.write_transaction() as connection:
+            company = connection.execute(
+                "SELECT id FROM companies WHERE upper(ticker) = upper(?)", (ticker.strip(),)
+            ).fetchone()
+            if company is None:
+                raise MappingInputError(
+                    f"No stored company data found for {ticker.strip().upper()}."
+                )
+            company_id = int(company["id"])
+            current_inputs = self._mapping_inputs_in_transaction(
+                connection,
+                company_id,
+                evaluation.report_kind,
+                evaluation.source_report_rule_version,
+            )
+            if active_window_hash(current_inputs) != expected_active_window_hash:
+                raise MappingInputError("The active evidence window changed during Direct Mapping.")
+
+            existing = connection.execute(
+                "SELECT id FROM metric_evaluations WHERE company_id = ? AND report_kind = ? "
+                "AND definition_version = ? AND mapping_rule_hash = ? "
+                "AND source_report_rule_version = ? AND active_window_hash = ?",
+                (
+                    company_id,
+                    evaluation.report_kind,
+                    evaluation.definition_version,
+                    evaluation.mapping_rule_hash,
+                    evaluation.source_report_rule_version,
+                    expected_active_window_hash,
+                ),
+            ).fetchone()
+            if existing is not None:
+                evaluation_id = int(existing["id"])
+                self._publish_metric_pointer(
+                    connection, company_id, evaluation.report_kind, evaluation_id
+                )
+                return self._load_metric_evaluation_ref(
+                    connection, evaluation_id, reused=True, stale=False
+                )
+
+            cursor = connection.execute(
+                "INSERT INTO metric_evaluations("
+                "company_id, report_kind, definition_version, mapping_rule_version, "
+                "mapping_rule_hash, mapping_rule_json, source_report_rule_version, "
+                "active_window_hash, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    company_id,
+                    evaluation.report_kind,
+                    evaluation.definition_version,
+                    evaluation.mapping_rule_version,
+                    evaluation.mapping_rule_hash,
+                    evaluation.mapping_rule_json,
+                    evaluation.source_report_rule_version,
+                    expected_active_window_hash,
+                    _now(),
+                ),
+            )
+            evaluation_id = _last_row_id(cursor)
+            metric_ids = {
+                str(row["metric_key"]): int(row["id"])
+                for row in connection.execute(
+                    "SELECT id, metric_key FROM target_metrics WHERE definition_version = ? "
+                    "ORDER BY id",
+                    (evaluation.definition_version,),
+                )
+            }
+            if tuple(metric_ids) != TARGET_METRIC_KEYS:
+                raise MappingInputError(
+                    "Stored Target Metric definitions do not match the rule set."
+                )
+            for result in evaluation.results:
+                cursor = connection.execute(
+                    "INSERT INTO metric_results("
+                    "evaluation_id, target_metric_id, snapshot_id, report_evaluation_id, "
+                    "status, missing_reason, selected_candidate_rank, resolution_trace_json"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        evaluation_id,
+                        metric_ids[result.metric_key],
+                        result.snapshot_id,
+                        result.report_evaluation_id,
+                        result.status,
+                        result.missing_reason,
+                        result.selected_candidate_rank,
+                        result.resolution_trace_json,
+                    ),
+                )
+                result_id = _last_row_id(cursor)
+                if result.selected_fact_id is not None:
+                    connection.execute(
+                        "INSERT INTO metric_result_facts("
+                        "metric_result_id, snapshot_id, fact_id, role"
+                        ") VALUES (?, ?, ?, 'selected')",
+                        (result_id, result.snapshot_id, result.selected_fact_id),
+                    )
+
+            result_count = int(
+                connection.execute(
+                    "SELECT count(*) FROM metric_results WHERE evaluation_id = ?",
+                    (evaluation_id,),
+                ).fetchone()[0]
+            )
+            link_count = int(
+                connection.execute(
+                    "SELECT count(*) FROM metric_result_facts AS mrf "
+                    "JOIN metric_results AS mr ON mr.id = mrf.metric_result_id "
+                    "WHERE mr.evaluation_id = ?",
+                    (evaluation_id,),
+                ).fetchone()[0]
+            )
+            reported_count = sum(result.status == "reported" for result in evaluation.results)
+            if result_count != len(evaluation.results) or link_count != reported_count:
+                raise MappingInputError("Direct Mapping persistence cardinality check failed.")
+            self._publish_metric_pointer(
+                connection, company_id, evaluation.report_kind, evaluation_id
+            )
+            return self._load_metric_evaluation_ref(
+                connection, evaluation_id, reused=False, stale=False
+            )
+
+    def publish_metric_evaluation(
+        self,
+        ticker: str,
+        evaluation_id: int,
+        *,
+        expected_active_window_hash: str,
+    ) -> None:
+        with self.database.write_transaction() as connection:
+            row = connection.execute(
+                "SELECT me.company_id, me.report_kind, me.source_report_rule_version, "
+                "me.active_window_hash FROM metric_evaluations AS me "
+                "JOIN companies AS c ON c.id = me.company_id "
+                "WHERE me.id = ? AND upper(c.ticker) = upper(?)",
+                (evaluation_id, ticker.strip()),
+            ).fetchone()
+            if row is None:
+                raise MappingInputError(f"Unknown Direct Mapping evaluation {evaluation_id}.")
+            if str(row["active_window_hash"]) != expected_active_window_hash:
+                raise MappingInputError(
+                    "Direct Mapping evaluation does not match the requested window."
+                )
+            report_kind = str(row["report_kind"])
+            current_inputs = self._mapping_inputs_in_transaction(
+                connection,
+                int(row["company_id"]),
+                report_kind,  # type: ignore[arg-type]
+                str(row["source_report_rule_version"]),
+            )
+            if active_window_hash(current_inputs) != expected_active_window_hash:
+                raise MappingInputError("The active evidence window changed during Direct Mapping.")
+            self._publish_metric_pointer(
+                connection,
+                int(row["company_id"]),
+                report_kind,  # type: ignore[arg-type]
+                evaluation_id,
+            )
+
+    def get_published_metric_evaluation(
+        self, ticker: str, report_kind: ReportKind
+    ) -> MetricEvaluationRef | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT me.*, "
+                "(SELECT count(*) FROM metric_results AS mr "
+                " WHERE mr.evaluation_id = me.id AND mr.status = 'reported') AS reported_count, "
+                "(SELECT count(*) FROM metric_results AS mr "
+                " WHERE mr.evaluation_id = me.id AND mr.status = 'missing') AS missing_count "
+                "FROM published_metric_evaluations AS pme "
+                "JOIN metric_evaluations AS me ON me.id = pme.evaluation_id "
+                "JOIN companies AS c ON c.id = pme.company_id "
+                "WHERE upper(c.ticker) = upper(?) AND pme.report_kind = ?",
+                (ticker.strip(), report_kind),
+            ).fetchone()
+            if row is None:
+                return None
+            stale = True
+            try:
+                current = self._mapping_inputs_in_transaction(
+                    connection,
+                    int(row["company_id"]),
+                    report_kind,
+                    str(row["source_report_rule_version"]),
+                )
+                stale = active_window_hash(current) != str(row["active_window_hash"])
+            except MappingInputError:
+                pass
+            return self._metric_evaluation_ref(row, reused=True, stale=stale)
+
+    def list_metric_results(self, evaluation_id: int) -> tuple[dict[str, object], ...]:
+        """Return a detached metric grid with exact selected-fact lineage."""
+        with self.database.connection() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM metric_evaluations WHERE id = ?", (evaluation_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Unknown Direct Mapping evaluation {evaluation_id}.")
+            return tuple(
+                dict(row)
+                for row in connection.execute(
+                    "SELECT mr.id AS metric_result_id, tm.metric_key, tm.display_name, "
+                    "mr.snapshot_id, mr.report_evaluation_id, mr.status, mr.missing_reason, "
+                    "mr.selected_candidate_rank, mr.resolution_trace_json, "
+                    "mrf.fact_id, f.accession, f.form, f.report_date, "
+                    "fact.display_qname, c.namespace_uri, c.local_name, "
+                    "fact.raw_value_text, fact.typed_value_text, fact.decimals, "
+                    "fact.source_locator, ctx.period_kind, ctx.period_start_date, "
+                    "ctx.period_end_date, ctx.entity_identifier, u.legacy_report_unit_text "
+                    "FROM metric_results AS mr "
+                    "JOIN target_metrics AS tm ON tm.id = mr.target_metric_id "
+                    "JOIN evidence_snapshots AS s ON s.id = mr.snapshot_id "
+                    "JOIN filings AS f ON f.id = s.filing_id "
+                    "LEFT JOIN metric_result_facts AS mrf ON mrf.metric_result_id = mr.id "
+                    "LEFT JOIN facts AS fact ON fact.id = mrf.fact_id "
+                    "LEFT JOIN concepts AS c ON c.id = fact.concept_id "
+                    "LEFT JOIN contexts AS ctx ON ctx.id = fact.context_id "
+                    "LEFT JOIN units AS u ON u.id = fact.unit_id "
+                    "WHERE mr.evaluation_id = ? "
+                    "ORDER BY tm.id, f.report_date, mr.snapshot_id",
+                    (evaluation_id,),
+                )
             )
 
     def fiscal_period_for_accession(self, accession: str) -> str | None:
@@ -839,6 +1319,148 @@ class EvidenceStore:
                 "foreign_key_issues": foreign_key_issues,
                 "ok": not foreign_key_issues,
             }
+
+    @staticmethod
+    def _validate_metric_evaluation(
+        evaluation: MetricWindowEvaluation,
+        expected_active_window_hash: str,
+    ) -> None:
+        if active_window_hash(evaluation.snapshots) != expected_active_window_hash:
+            raise MappingInputError("Direct Mapping evaluation has an unexpected window hash.")
+        expected_pairs = {
+            (metric_key, snapshot.snapshot_id)
+            for metric_key in TARGET_METRIC_KEYS
+            for snapshot in evaluation.snapshots
+        }
+        actual_pairs = {(result.metric_key, result.snapshot_id) for result in evaluation.results}
+        if actual_pairs != expected_pairs or len(actual_pairs) != len(evaluation.results):
+            raise MappingInputError(
+                "Direct Mapping must contain one result per Target Metric and snapshot."
+            )
+        report_evaluations = {
+            snapshot.snapshot_id: snapshot.report_evaluation_id for snapshot in evaluation.snapshots
+        }
+        for result in evaluation.results:
+            if report_evaluations[result.snapshot_id] != result.report_evaluation_id:
+                raise MappingInputError("Metric result uses the wrong report evaluation.")
+            if result.status == "reported" and result.selected_fact_id is None:
+                raise MappingInputError("Every reported metric result must select one fact.")
+            if result.status == "missing" and result.selected_fact_id is not None:
+                raise MappingInputError("A missing metric result cannot select a fact.")
+
+    @staticmethod
+    def _mapping_inputs_in_transaction(
+        connection: sqlite3.Connection,
+        company_id: int,
+        report_kind: ReportKind,
+        report_rule_version: str,
+    ) -> tuple[MappingSnapshotInput, ...]:
+        form = "10-K" if report_kind == "annual" else "10-Q"
+        company = connection.execute(
+            "SELECT cik FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+        if company is None:
+            raise MappingInputError(f"Unknown stored company {company_id}.")
+        rows = connection.execute(
+            "SELECT f.id AS filing_id, f.accession, f.form, f.report_date, "
+            "f.active_window_rank, afs.snapshot_id, s.payload_hash, "
+            "re.id AS report_evaluation_id, re.rule_version "
+            "FROM filings AS f "
+            "LEFT JOIN active_filing_snapshots AS afs ON afs.filing_id = f.id "
+            "LEFT JOIN evidence_snapshots AS s ON s.id = afs.snapshot_id "
+            "LEFT JOIN report_evaluations AS re ON re.snapshot_id = s.id "
+            "AND re.report_kind = ? AND re.rule_version = ? "
+            "WHERE f.company_id = ? AND f.form = ? AND f.is_active = 1 "
+            "ORDER BY f.active_window_rank, f.accession",
+            (report_kind, report_rule_version, company_id, form),
+        ).fetchall()
+        if not rows:
+            raise MappingInputError(f"No active {report_kind} filing window is stored.")
+        result: list[MappingSnapshotInput] = []
+        for row in rows:
+            if row["snapshot_id"] is None:
+                raise MappingInputError(
+                    f"Active filing {row['accession']} has no published evidence snapshot."
+                )
+            if row["report_evaluation_id"] is None:
+                raise MappingInputError(
+                    f"Snapshot {row['snapshot_id']} has no {report_kind} "
+                    f"{report_rule_version} evaluation."
+                )
+            result.append(
+                MappingSnapshotInput(
+                    snapshot_id=int(row["snapshot_id"]),
+                    filing_id=int(row["filing_id"]),
+                    accession=str(row["accession"]),
+                    form=str(row["form"]),
+                    report_date=date.fromisoformat(str(row["report_date"])),
+                    active_window_rank=int(row["active_window_rank"]),
+                    payload_hash=str(row["payload_hash"]),
+                    report_evaluation_id=int(row["report_evaluation_id"]),
+                    source_report_rule_version=str(row["rule_version"]),
+                    company_cik=str(company["cik"]),
+                )
+            )
+        return tuple(result)
+
+    @staticmethod
+    def _publish_metric_pointer(
+        connection: sqlite3.Connection,
+        company_id: int,
+        report_kind: ReportKind,
+        evaluation_id: int,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO published_metric_evaluations("
+            "company_id, report_kind, evaluation_id, published_at"
+            ") VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(company_id, report_kind) DO UPDATE SET "
+            "evaluation_id = excluded.evaluation_id, published_at = excluded.published_at",
+            (company_id, report_kind, evaluation_id, _now()),
+        )
+
+    def _load_metric_evaluation_ref(
+        self,
+        connection: sqlite3.Connection,
+        evaluation_id: int,
+        *,
+        reused: bool,
+        stale: bool,
+    ) -> MetricEvaluationRef:
+        row = connection.execute(
+            "SELECT me.*, "
+            "(SELECT count(*) FROM metric_results AS mr "
+            " WHERE mr.evaluation_id = me.id AND mr.status = 'reported') AS reported_count, "
+            "(SELECT count(*) FROM metric_results AS mr "
+            " WHERE mr.evaluation_id = me.id AND mr.status = 'missing') AS missing_count "
+            "FROM metric_evaluations AS me WHERE me.id = ?",
+            (evaluation_id,),
+        ).fetchone()
+        if row is None:
+            raise MappingInputError(f"Unknown Direct Mapping evaluation {evaluation_id}.")
+        return self._metric_evaluation_ref(row, reused=reused, stale=stale)
+
+    @staticmethod
+    def _metric_evaluation_ref(
+        row: sqlite3.Row,
+        *,
+        reused: bool,
+        stale: bool,
+    ) -> MetricEvaluationRef:
+        return MetricEvaluationRef(
+            evaluation_id=int(row["id"]),
+            company_id=int(row["company_id"]),
+            report_kind=str(row["report_kind"]),  # type: ignore[arg-type]
+            definition_version=str(row["definition_version"]),
+            mapping_rule_version=str(row["mapping_rule_version"]),
+            mapping_rule_hash=str(row["mapping_rule_hash"]),
+            source_report_rule_version=str(row["source_report_rule_version"]),
+            active_window_hash=str(row["active_window_hash"]),
+            reported_count=int(row["reported_count"]),
+            missing_count=int(row["missing_count"]),
+            reused=reused,
+            stale=stale,
+        )
 
     @staticmethod
     def _page_limit(limit: int) -> int:

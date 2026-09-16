@@ -2,8 +2,9 @@
 
 Evidence ingestion is separate from stored-evidence report generation. Ingestion
 never renders or writes a Showcase Report. Reports are generated interactively with
-`uv run --no-sync python tests/test_company_ingestion.py`; both installed console
-commands run ingestion.
+`uv run --no-sync python tests/inspect_ingestion.py`. The two ingestion console
+commands do not generate reports; the separate `sec-inline-financials-map` command
+evaluates Direct Mapping from stored evidence only.
 
 ## Runtime location
 

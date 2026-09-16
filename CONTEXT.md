@@ -36,6 +36,18 @@ _Avoid_: Complete filing history, twelve consecutive fiscal quarters
 A mapping resolved by matching a configured XBRL concept name to a fact for a Target Metric and exact period, without LLM inference.
 _Avoid_: Mapping Recommendation, inferred concept match
 
+**Direct Mapping Rule Set**:
+The frozen, versioned ordering of primary and alternative concepts used by Direct Mapping. `direct-mapping-v1` is paired with the seven `target-metrics-v1` definitions.
+_Avoid_: Runtime parsing of `mapping.txt`, unversioned rules
+
+**Metric Evaluation**:
+An immutable annual or quarterly Direct Mapping run over one exact published filing/snapshot window. An unchanged window and rule identity reuse the existing evaluation.
+_Avoid_: Mutable metric table, report output
+
+**Metric Result**:
+One persisted Target Metric outcome for one exact snapshot. It is either `reported`, linked to exactly one selected fact, or `missing`, with `mapping_not_found` or `no_selectable_fact_for_period` and a resolution trace.
+_Avoid_: Guessed value, generated Q4, averaged conflict
+
 **Reported Zero**:
 An Observed Filing Fact whose reported numeric value is zero. It is a present value and does not trigger fallback to another concept.
 _Avoid_: Missing value, empty value

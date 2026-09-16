@@ -1,19 +1,20 @@
 # Milestone 2 Direct Mapping Implementation Plan
 
-Status: Proposed
+Status: Implemented 2026-09-15
 Scope: Backend-only Direct Mapping for the seven Target Metrics
 Depends on: Existing evidence-v2 snapshots and persisted report-v1 decisions
 
-## 1. Naming assumption
+## 1. Naming decision
 
-The current documentation uses two milestone-numbering schemes:
+Before this implementation, the documentation used two milestone-numbering schemes:
 
 - README.md calls Direct Mapping the next Milestone 2.
 - docs/designs/project_proposal.txt calls incremental evidence updates Milestone 2
   and Direct Mapping Milestone 3.
 
-This plan follows the requested name "Milestone 2 Direct Mapping." Code, database
-versions, and interfaces should use the feature name "Direct Mapping" rather than
+The blueprint now groups durable storage and incremental evidence updates under
+Milestone 1 and consistently names Direct Mapping as Milestone 2. Code, database
+versions, and interfaces use the feature name "Direct Mapping" rather than
 depending on a milestone number.
 
 ## 2. Outcome
@@ -112,20 +113,20 @@ active filing-window publication.
 Keep EvidenceStore as the storage module. Add focused mapping methods to it instead
 of creating a second SQL repository layer or embedding SQL in the mapping resolver.
 
-### 4.4 Current gaps
+### 4.4 Gaps addressed by this milestone
 
-Two structural gaps must be filled:
+The implementation fills two structural gaps:
 
 1. Active filings currently have is_active and active_window_rank, but no explicit
    pointer to the exact immutable snapshot downstream products should consume.
 2. There is no versioned mapping-rule model, metric-evaluation schema, resolver, or
    published metric-evaluation pointer.
 
-The current automated test baseline is also insufficient: pytest currently
-collects zero tests. Existing ingestion, storage, retrieval, and report-replay
-behavior must be protected before mapping changes those paths.
+At plan authoring time, pytest collected zero tests. The implementation adds
+automated resolver, rules, storage, service, CLI, and ingestion-integration coverage,
+including a complete synthetic 5/12 window and stored-evidence AAPL acceptance.
 
-## 5. Proposed module structure
+## 5. Implemented module structure
 
 The runtime flow is:
 
@@ -611,7 +612,7 @@ The command should:
 
 Files:
 
-- tests/test_company_ingestion.py or replacement automated tests;
+- tests/inspect_ingestion.py plus replacement automated tests;
 - tests/test_evidence_store.py;
 - tests/test_report_projection.py; and
 - shared deterministic fixtures.
@@ -895,3 +896,29 @@ Direct Mapping is complete when:
   pass;
 - Ruff, formatting, strict mypy, and build checks pass; and
 - stored-evidence AAPL acceptance is recorded with exact scope and limitations.
+
+## 23. Acceptance record
+
+Acceptance ran on 2026-09-15 against the existing local AAPL evidence-v2 store.
+It used the published five-annual/twelve-quarter window and persisted report-v1
+evaluations. It did not contact the SEC, open Arelle, call an LLM, or generate a
+TXT/JSON report.
+
+First run:
+
+    AAPL: direct mapping complete
+    Annual evaluation 1: 35 reported, 0 missing (created)
+    Quarterly evaluation 2: 76 reported, 8 missing (created)
+
+All eight quarterly missing results were Operating Cash Flow with
+no_selectable_fact_for_period. The stored report-v1 evidence did not contain an
+eligible discrete-quarter selected fact for those periods; Direct Mapping did not
+substitute six- or nine-month year-to-date facts.
+
+The second identical run reused annual evaluation 1 and quarterly evaluation 2.
+The deterministic synthetic acceptance produced all 119 reported results for a
+complete 5/12 fixture. The offline verification suite passed 20 tests plus Ruff,
+Ruff formatting, strict mypy, and wheel/sdist build checks.
+
+This acceptance proves stored-evidence Direct Mapping and idempotent publication.
+It is not proof of live SEC access or a genuinely new-accession ingestion refresh.

@@ -5,11 +5,11 @@ filings and Arelle. The current CLI ingests or refreshes a selected company,
 retains filing resources in a content-addressed archive, and stores complete
 detached filing evidence plus narrative sections in SQLite.
 
-The next product layers are mapping for seven financial metrics, evidence-backed
-LLM recommendations for unresolved metrics, and a local frontend with evidence
-downloads and mapping review. [core.txt](core.txt) is the original requirements
-notebook; the [project proposal](docs/designs/project_proposal.txt) is the current
-project blueprint.
+Direct Mapping for seven financial metrics is implemented over stored evidence.
+The next product layers are evidence-backed LLM recommendations for unresolved
+metrics and a local frontend with evidence downloads and mapping review.
+[core.txt](core.txt) is the original requirements notebook; the
+[project proposal](docs/designs/project_proposal.txt) is the current blueprint.
 
 ## Current status
 
@@ -18,22 +18,24 @@ project blueprint.
 | SEC discovery and complete Arelle evidence extraction | Implemented |
 | Stored-evidence annual/quarterly TXT and complete-facts JSON reports | Implemented; interactive script |
 | Durable filing-resource archive and relational evidence storage | Implemented; live 5/12 windows verified |
-| Direct metric mapping using `mapping.txt` | Planned for seven metrics |
+| Versioned Direct Mapping for seven metrics | Implemented; stored AAPL 5/12 acceptance verified |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
 | On-demand filing refresh and historical evidence retention | Implemented; new-accession live acceptance remains |
 | Frontend and evidence downloads | Planned |
 
 Reports are generated only from stored snapshots and their persisted `report-v1`
-evaluations. The interactive script in `tests/test_company_ingestion.py` does not
-contact the SEC or open Arelle. Both installed console commands run company
-ingestion; `sec-inline-financials` adds elapsed time and the resolved storage paths
-to the normal ingestion summary.
+evaluations. The interactive script in `tests/inspect_ingestion.py` does not
+contact the SEC or open Arelle. The two ingestion commands also evaluate or reuse
+Direct Mapping after evidence publication; `sec-inline-financials` adds elapsed
+time and the resolved storage paths. `sec-inline-financials-map` runs only the
+stored-evidence mapping path.
 
 The evidence-ingestion path detaches every Arelle-exposed observation, stores linked
 evidence in SQLite, and retains loaded filing resources in an immutable
-content-addressed archive. Direct Mapping, LLM integration, and the frontend remain
-later milestones. On-demand filing-window updates are implemented; mapping-result
-invalidation waits for the mapping milestone.
+content-addressed archive. Direct Mapping uses exact published snapshot bindings,
+persists immutable annual and quarterly evaluations, and refreshes or reuses them
+after filing-window updates. LLM integration and the frontend remain later
+milestones.
 
 The same filing snapshot also stores normalized narrative sections from the retained
 primary document. For a 10-K these are Items 1, 1A, 3, 7, 7A, and 8. For a 10-Q
@@ -54,10 +56,12 @@ Ingestion and update workflows do not generate reports automatically.
   schema, artifact, replay, and integrity contracts.
 - [Evidence-storage runbook](docs/evidence_storage_runbook.md): commands, runtime
   paths, audits, recovery, backup, and verification.
+- [Milestone 2 Direct Mapping plan](docs/designs/direct_mapping_implementation_plan.txt):
+  implemented rules, resolver, persistence, refresh, CLI, and acceptance contract.
 - [Planned frontend wireframe](docs/analyst_dashboard_wireframe.html) and
   [static preview](docs/analyst_dashboard_wireframe.png): demo-only future interface.
 
-## Planned metric workflow
+## Metric workflow
 
 ```text
 SEC filings -> Arelle extraction -> retained filings and linked evidence
@@ -70,13 +74,17 @@ SEC filings -> Arelle extraction -> retained filings and linked evidence
 The project covers **seven metrics**: Revenue, Operating Income, Net Income,
 Total Assets, Total Liabilities, Equity, and Operating Cash Flow.
 
-[mapping.txt](mapping.txt) supplies the exact concept names used for Direct
-Mapping. Mapping is evaluated separately for each company, metric, and exact
-period. Detailed precedence and evidence rules belong to the later mapping
-design.
+[mapping.txt](mapping.txt) remains the readable source list and parity benchmark.
+Runtime code uses the frozen `direct-mapping-v1` rules and the
+`target-metrics-v1` definitions. Mapping is evaluated separately for each company,
+report kind, Target Metric, and exact period.
 
 - Evaluate mappings separately for every annual or filed-quarter period.
 - Keep a valid reported **zero**. Zero does not mean missing or trigger fallback.
+- Persist either `reported` with one exact fact link or `missing` with
+  `mapping_not_found` or `no_selectable_fact_for_period`.
+- Keep prior published evaluations when new evidence is incomplete or mapping fails;
+  readers expose the prior evaluation as stale when its window no longer matches.
 - When Direct Mapping cannot populate a metric, retrieve target-specific stored
   evidence and request an LLM Mapping Recommendation.
 - Keep dimensional-only, conflict, unsupported-period, insufficient-evidence,
@@ -192,10 +200,21 @@ accession returns `updated`. If an SEC refresh fails for a company with stored
 evidence, the command returns `refresh_failed_using_local_data` and leaves the
 published local window unchanged.
 
+Evaluate or reuse Direct Mapping from the published local evidence window:
+
+```powershell
+uv run --no-sync sec-inline-financials-map AAPL
+```
+
+This command requires a complete active 5/12 window with exact snapshot bindings
+and persisted `report-v1` evaluations. It prints annual and quarterly evaluation
+IDs plus reported/missing counts. It does not require `SEC_USER_AGENT`, contact the
+SEC, open Arelle, call an LLM, or create TXT/JSON reports.
+
 Generate a report from stored evidence:
 
 ```powershell
-uv run --no-sync python tests/test_company_ingestion.py
+uv run --no-sync python tests/inspect_ingestion.py
 ```
 
 The script prompts for a ticker, an annual or quarterly report, and one or more
@@ -250,7 +269,7 @@ Arelle, not from the SEC Company Facts API.
   so six- and nine-month year-to-date facts are excluded from quarterly cells.
 - Quarter-end instant facts are eligible in the quarterly report.
 - The current table uses eligible dimension-free facts as its primary values.
-  Planned metric mapping also needs to verify entity and target scope.
+  Direct Mapping additionally verifies entity and Target Metric scope.
 - Dimensional-only concepts remain visible as `DIMENSIONAL [D...]`, with their
   components below the table.
 - Exact dimension-free duplicates collapse to the most precise reported fact.
@@ -267,7 +286,7 @@ Arelle, not from the SEC Company Facts API.
 Ingestion validates XBRL and calculation relationships with Arelle. It does not
 claim to run the SEC's complete EDGAR Filer Manual validation suite.
 
-These filters also limit planned mapping coverage. Six- or nine-month cash-flow
+These filters also limit Direct Mapping coverage. Six- or nine-month cash-flow
 facts cannot fill discrete-quarter Operating Cash Flow or CapEx cells, and
 cover-page shares dated after the report date cannot fill period-end shares.
 The expanded store will preserve those observations with their actual dates and
@@ -310,7 +329,7 @@ refresh or the SEC's full EFM validation suite.
 
 ## Next implementation step
 
-Proceed to Milestone 2 Direct Mapping over stored evidence. A separate live
-acceptance should exercise an update that discovers a genuinely new accession.
-Detailed mapping precedence, model/provider choices, recommendation validation,
-API contracts, and frontend implementation remain open decisions.
+Proceed to Milestone 3 evidence-backed LLM Mapping Recommendations and human
+review. A separate live acceptance should still exercise an ingestion update that
+discovers a genuinely new accession. Model/provider choices, recommendation
+validation, API contracts, and frontend implementation remain open decisions.
