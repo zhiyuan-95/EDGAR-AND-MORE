@@ -1,3 +1,4 @@
+# uv run --no-sync python tests/inspect_direct_mapping.py
 from __future__ import annotations
 
 import os
