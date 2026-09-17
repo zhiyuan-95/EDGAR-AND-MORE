@@ -54,8 +54,10 @@ Ingestion and update workflows do not generate reports automatically.
   schema, artifact, replay, and integrity contracts.
 - [Evidence-storage runbook](docs/evidence_storage_runbook.md): commands, runtime
   paths, audits, recovery, backup, and verification.
-- [Planned frontend wireframe](docs/analyst_dashboard_wireframe.html) and
-  [static preview](docs/analyst_dashboard_wireframe.png): demo-only future interface.
+- [Interactive frontend prototype](docs/analyst_dashboard_wireframe.html) and
+  [static preview](docs/analyst_dashboard_wireframe.png): demo-only one-page,
+  single-company metric-lineage and filing-download selector; local API integration
+  remains planned.
 
 ## Planned metric workflow
 
