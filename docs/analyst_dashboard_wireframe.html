@@ -3,175 +3,686 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SEC Metric Explorer - planned frontend wireframe</title>
+  <title>SEC Filing Explorer — simple frontend prototype</title>
   <style>
-    /* Rough monochrome wireframe: hierarchy and interaction are being tested, not visual polish. */
-    :root { --ink:#1f1f1f; --muted:#666; --line:#aaa; --paper:#fafafa; --panel:#fff; }
+    :root {
+      --ink:#142033;
+      --muted:#657085;
+      --line:#d9dee8;
+      --line-strong:#bdc6d5;
+      --paper:#ffffff;
+      --canvas:#f5f7fa;
+      --navy:#10233f;
+      --blue:#2563eb;
+      --blue-dark:#1748b5;
+      --blue-soft:#edf3ff;
+      --green:#13795b;
+      --green-soft:#eaf7f1;
+      --shadow:0 14px 36px rgba(18,32,51,.07);
+    }
+
     * { box-sizing:border-box; }
-    body { margin:0; color:var(--ink); background:var(--paper); font:14px/1.45 system-ui, sans-serif; }
-    button, select { font:inherit; color:inherit; background:#fff; border:1px solid var(--line); border-radius:2px; padding:7px 10px; }
-    button { cursor:pointer; }
-    button[aria-pressed="true"], .active { outline:2px solid var(--ink); outline-offset:-2px; }
-    header { min-height:66px; padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:18px; }
-    .brand { flex-shrink:0; font-weight:700; letter-spacing:.03em; }
-    .demo { flex-shrink:0; padding:2px 6px; border:1px dashed var(--line); color:var(--muted); font-size:10px; }
-    .company { display:flex; gap:8px; align-items:center; flex:1; }
-    .company select { min-width:210px; }
-    .freshness { text-align:right; color:var(--muted); font-size:12px; }
-    main { display:grid; grid-template-columns:210px minmax(520px, 1fr) 330px; min-height:calc(100vh - 66px); }
-    aside, section { border-right:1px solid var(--line); }
-    .metrics { padding:18px 14px; }
-    .eyebrow { margin:0 0 10px; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
-    .metric { width:100%; display:flex; justify-content:space-between; align-items:center; margin:0 0 6px; text-align:left; }
-    .state { display:inline-block; padding:1px 5px; border:1px solid var(--line); font-size:10px; text-transform:uppercase; }
-    .state.pending { border-style:dashed; }
-    .state.issue { border-style:double; border-width:3px; }
-    .center { padding:20px 22px 26px; }
-    .toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-    h1 { margin:0; font-size:24px; }
-    h2 { margin:0; font-size:17px; }
-    .subtitle { margin:4px 0 0; color:var(--muted); }
-    .period-toggle { display:flex; gap:5px; }
-    .summary { display:flex; gap:26px; margin:22px 0 12px; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
-    .summary strong { display:block; font-size:20px; }
-    .summary span { color:var(--muted); font-size:11px; }
-    .chart-wrap { border:1px solid var(--line); background:#fff; padding:14px 14px 8px; }
-    .chart-note { display:flex; justify-content:space-between; margin-bottom:4px; color:var(--muted); font-size:11px; }
-    svg { width:100%; height:300px; }
-    .grid { stroke:#ddd; stroke-width:1; }
-    .axis { stroke:#777; stroke-width:1; }
-    .trend { fill:none; stroke:#222; stroke-width:3; }
-    .point { fill:#fff; stroke:#222; stroke-width:3; cursor:pointer; }
-    .point:hover, .point.selected { fill:#222; }
-    .label { fill:#666; font-size:11px; }
-    .legend { display:flex; gap:14px; padding-top:8px; border-top:1px dashed #ccc; color:var(--muted); font-size:11px; }
-    .legend i { width:12px; height:12px; display:inline-block; margin-right:4px; border:2px solid #222; vertical-align:-2px; }
-    .legend .m { border-style:dashed; }
-    .legend .u { border-style:double; border-width:3px; }
-    .notice { margin-top:14px; padding:10px 12px; border:1px dashed var(--line); }
-    .evidence { padding:18px; border-right:0; background:#fff; }
-    .evidence-head { display:flex; justify-content:space-between; gap:8px; align-items:start; padding-bottom:12px; border-bottom:1px solid var(--line); }
-    .value { margin:18px 0 2px; font-size:28px; }
-    dl { margin:14px 0; }
-    dt { margin-top:10px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-    dd { margin:2px 0 0; overflow-wrap:anywhere; }
-    code { font:12px ui-monospace, monospace; }
-    .derivation { padding:10px; border:1px dashed var(--line); background:#fafafa; }
-    .actions { display:grid; gap:7px; margin-top:16px; }
-    .primary { background:#222; color:#fff; border-color:#222; }
-    footer { position:fixed; right:12px; bottom:10px; padding:4px 7px; background:#fff; border:1px dashed var(--line); color:var(--muted); font-size:10px; }
-    @media (max-width:1050px) { main { grid-template-columns:180px 1fr; } .evidence { grid-column:1 / -1; border-top:1px solid var(--line); } }
+
+    body {
+      margin:0;
+      min-width:320px;
+      color:var(--ink);
+      background:var(--canvas);
+      font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+
+    button,input,select { font:inherit; }
+    button { color:inherit; }
+    button:focus-visible,input:focus-visible,select:focus-visible,label:has(input:focus-visible) {
+      outline:3px solid rgba(37,99,235,.25);
+      outline-offset:2px;
+    }
+
+    .topbar {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      min-height:64px;
+      padding:0 max(24px,calc((100vw - 1160px) / 2));
+      color:#fff;
+      background:var(--navy);
+    }
+
+    .brand { display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.01em; }
+    .brand-mark {
+      display:grid;
+      place-items:center;
+      width:32px;
+      height:32px;
+      border:1px solid rgba(255,255,255,.22);
+      border-radius:8px;
+      background:rgba(255,255,255,.08);
+    }
+    .brand-mark svg { width:18px; height:18px; }
+    .prototype-label { color:#b9c6d8; font-size:12px; }
+
+    .page {
+      width:min(1160px,calc(100% - 40px));
+      margin:0 auto;
+      padding:42px 0 54px;
+    }
+
+    .intro { margin-bottom:24px; }
+    .eyebrow {
+      margin:0 0 7px;
+      color:var(--blue-dark);
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.09em;
+      text-transform:uppercase;
+    }
+    h1 { margin:0; font-size:clamp(28px,4vw,42px); line-height:1.13; letter-spacing:-.045em; }
+    .intro-copy { max-width:680px; margin:10px 0 0; color:var(--muted); font-size:16px; }
+
+    .company-search {
+      position:relative;
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:10px;
+      margin:27px 0 16px;
+    }
+    .search-shell {
+      display:flex;
+      align-items:center;
+      gap:12px;
+      min-height:58px;
+      padding:0 17px;
+      border:1px solid var(--line-strong);
+      border-radius:12px;
+      background:#fff;
+      box-shadow:0 8px 22px rgba(18,32,51,.045);
+    }
+    .search-shell svg { width:20px; color:var(--muted); flex:0 0 auto; }
+    .search-shell input { width:100%; border:0; outline:0; color:var(--ink); background:transparent; font-size:17px; }
+    .search-button,.download-button {
+      border:0;
+      border-radius:10px;
+      color:#fff;
+      background:var(--blue);
+      font-weight:800;
+      cursor:pointer;
+      transition:background .15s,transform .15s;
+    }
+    .search-button { min-width:92px; padding:0 20px; }
+    .search-button:hover,.download-button:hover { background:var(--blue-dark); transform:translateY(-1px); }
+
+    .company-strip {
+      display:grid;
+      grid-template-columns:minmax(160px,1fr) auto auto;
+      align-items:center;
+      gap:20px;
+      margin-bottom:24px;
+      padding:12px 15px;
+      border:1px solid var(--line);
+      border-radius:10px;
+      background:rgba(255,255,255,.7);
+    }
+    .company-name { font-weight:800; }
+    .company-ticker { margin-left:6px; color:var(--muted); font-weight:650; }
+    .filing-freshness { display:flex; align-items:stretch; }
+    .filing-update { min-width:205px; padding:0 18px; border-left:1px solid var(--line); }
+    .filing-update-label { display:block; color:var(--muted); font-size:10px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+    .filing-update strong { display:block; margin-top:2px; font-size:13px; }
+    .accession-line { display:block; margin-top:1px; color:var(--muted); font-size:10px; line-height:1.35; }
+    .filing-update code { font:10px/1.35 ui-monospace,Consolas,monospace; }
+    .stored-state { display:flex; align-items:center; gap:8px; color:var(--green); font-size:12px; font-weight:750; }
+    .stored-state i { width:8px; height:8px; border-radius:50%; background:var(--green); }
+
+    .download-card {
+      overflow:hidden;
+      margin-top:16px;
+      border:1px solid var(--line);
+      border-radius:16px;
+      background:var(--paper);
+      box-shadow:var(--shadow);
+    }
+    .card-head {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:22px;
+      padding:22px 24px 18px;
+      border-bottom:1px solid var(--line);
+    }
+    .card-kicker { margin:0 0 4px; color:var(--muted); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .card-head h2 { margin:0; font-size:21px; letter-spacing:-.025em; }
+    .card-copy { margin:5px 0 0; color:var(--muted); font-size:13px; }
+
+    .segmented {
+      display:inline-flex;
+      flex:0 0 auto;
+      padding:3px;
+      border:1px solid var(--line);
+      border-radius:9px;
+      background:#f8f9fb;
+    }
+    .segment {
+      padding:7px 13px;
+      border:0;
+      border-radius:6px;
+      background:transparent;
+      color:var(--muted);
+      font-size:13px;
+      font-weight:750;
+      cursor:pointer;
+    }
+    .segment[aria-pressed="true"] { color:var(--ink); background:#fff; box-shadow:0 1px 4px rgba(18,32,51,.12); }
+
+    .controls {
+      display:grid;
+      grid-template-columns:minmax(0,1fr) 220px;
+      gap:30px;
+      padding:22px 24px 20px;
+    }
+    .field-label { display:block; margin-bottom:11px; color:var(--muted); font-size:12px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+    .period-choice {
+      display:flex;
+      align-items:center;
+      gap:11px;
+      min-height:46px;
+      padding:8px 12px;
+      border:1px solid var(--line-strong);
+      border-radius:9px;
+      color:var(--ink);
+      background:#fff;
+      cursor:pointer;
+    }
+    .period-choice input { width:18px; height:18px; margin:0; accent-color:var(--blue); flex:0 0 auto; }
+    .period-choice strong { display:block; font-size:13px; line-height:1.25; }
+    .period-choice small { display:block; margin-top:2px; color:var(--muted); font-size:11px; line-height:1.25; }
+    .period-choice:has(input:checked) { border-color:#9eb9f7; background:var(--blue-soft); }
+    .period-choice:has(input:checked) strong { color:var(--blue-dark); }
+    .range-field.is-all .range-shell { opacity:.48; }
+    .range-field.is-all .range-shell input { cursor:not-allowed; }
+    .range-field.is-all .range-scale strong { color:var(--blue-dark); }
+
+    .range-shell { position:relative; height:28px; margin:3px 9px 0; }
+    .range-track,.range-fill {
+      position:absolute;
+      top:12px;
+      right:0;
+      left:0;
+      height:4px;
+      border-radius:999px;
+      background:#dfe4ed;
+    }
+    .range-fill { right:auto; background:var(--blue); }
+    .range-shell input[type="range"] {
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:28px;
+      margin:0;
+      border:0;
+      outline:0;
+      background:transparent;
+      pointer-events:none;
+      appearance:none;
+      -webkit-appearance:none;
+    }
+    .range-shell input[type="range"]::-webkit-slider-thumb {
+      width:18px;
+      height:18px;
+      border:3px solid #fff;
+      border-radius:50%;
+      background:var(--blue);
+      box-shadow:0 0 0 1px var(--blue),0 2px 5px rgba(18,32,51,.25);
+      pointer-events:auto;
+      cursor:grab;
+      appearance:none;
+      -webkit-appearance:none;
+    }
+    .range-shell input[type="range"]::-moz-range-thumb {
+      width:13px;
+      height:13px;
+      border:3px solid #fff;
+      border-radius:50%;
+      background:var(--blue);
+      box-shadow:0 0 0 1px var(--blue),0 2px 5px rgba(18,32,51,.25);
+      pointer-events:auto;
+      cursor:grab;
+    }
+    .range-scale {
+      position:relative;
+      height:18px;
+      margin:0 9px;
+      color:var(--muted);
+      font-size:12px;
+    }
+    .range-scale > span { position:absolute; top:0; }
+    .range-scale > span:first-child { left:0; }
+    .range-scale > span:last-child { right:0; }
+    .range-scale.at-min > span:first-child,
+    .range-scale.at-max > span:last-child { visibility:hidden; }
+    .range-scale strong {
+      position:absolute;
+      top:0;
+      left:50%;
+      color:var(--ink);
+      font-size:13px;
+      transform:translateX(-50%);
+      white-space:nowrap;
+    }
+    .range-scale strong.at-min { transform:translateX(0); }
+    .range-scale strong.at-max { transform:translateX(-100%); }
+
+    .section-picker { padding:0 24px 22px; }
+    .section-options { display:flex; flex-wrap:wrap; gap:8px; }
+    .section-option {
+      display:inline-flex;
+      align-items:center;
+      min-height:38px;
+      padding:0 12px;
+      border:1px solid var(--line);
+      border-radius:999px;
+      background:#fff;
+      cursor:pointer;
+      user-select:none;
+    }
+    .section-option input { position:absolute; opacity:0; pointer-events:none; }
+    .section-option span { color:var(--muted); font-size:13px; font-weight:700; }
+    .section-option:has(input:checked) { border-color:#9eb9f7; background:var(--blue-soft); }
+    .section-option:has(input:checked) span { color:var(--blue-dark); }
+
+    .action-row {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:22px;
+      padding:18px 24px;
+      border-top:1px solid var(--line);
+      background:#fafbfc;
+    }
+    .action-summary { margin:0; color:#354157; }
+    .action-summary strong { color:var(--ink); }
+    .download-button { flex:0 0 auto; min-width:158px; padding:12px 18px; }
+    .download-button svg { width:16px; margin-right:7px; vertical-align:-3px; }
+
+    .truth-note {
+      display:flex;
+      align-items:flex-start;
+      gap:9px;
+      margin:20px 2px 0;
+      color:var(--muted);
+      font-size:12px;
+    }
+    .truth-note svg { width:16px; flex:0 0 auto; margin-top:1px; color:var(--blue-dark); }
+
+    .toast {
+      position:fixed;
+      left:50%;
+      bottom:24px;
+      z-index:10;
+      max-width:calc(100vw - 32px);
+      padding:11px 15px;
+      border-radius:9px;
+      color:#fff;
+      background:var(--navy);
+      box-shadow:0 10px 28px rgba(18,32,51,.24);
+      opacity:0;
+      pointer-events:none;
+      transform:translate(-50%,10px);
+      transition:.18s;
+    }
+    .toast.show { opacity:1; transform:translate(-50%,0); }
+
+    @media (max-width:760px) {
+      .topbar { padding:0 20px; }
+      .prototype-label { display:none; }
+      .page { width:min(100% - 28px,1160px); padding-top:28px; }
+      .company-search { grid-template-columns:1fr; }
+      .search-button { min-height:48px; }
+      .company-strip,.card-head,.action-row { align-items:flex-start; }
+      .company-strip { grid-template-columns:1fr; }
+      .filing-freshness { width:100%; }
+      .filing-update { width:50%; min-width:0; }
+      .card-head,.action-row { flex-direction:column; }
+      .controls { grid-template-columns:1fr; gap:22px; }
+      .download-button { width:100%; }
+      .stored-state { text-align:left; }
+    }
+
+    @media (max-width:470px) {
+      .filing-freshness { display:grid; grid-template-columns:1fr; gap:10px; }
+      .filing-update { width:100%; padding:0; border-left:0; }
+      .card-head { padding:19px 18px 16px; }
+      .controls,.section-picker { padding-right:18px; padding-left:18px; }
+      .action-row { padding:17px 18px; }
+      .segmented { width:100%; }
+      .segment { flex:1; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand">SEC METRIC EXPLORER</div>
-    <div class="demo">PLANNED UI / DEMO DATA</div>
-    <div class="company">
-      <label for="company">Company</label>
-      <select id="company"><option>Microsoft Corp. (MSFT)</option></select>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3.5h8l4 4V20.5H6z"/><path d="M14 3.5v4h4M9 11h6M9 14.5h6M9 18h4"/></svg>
+      </span>
+      <span>SEC Filing Explorer</span>
     </div>
-    <div class="freshness">Data through FY2026 Q3<br>Checked 8 minutes ago</div>
-    <button>Refresh filings (planned)</button>
+    <span class="prototype-label">Simple frontend prototype</span>
   </header>
 
-  <main>
-    <!-- Metric navigation makes state visible before a user opens the evidence. -->
-    <aside class="metrics">
-      <p class="eyebrow">Target metrics</p>
-      <button class="metric" data-metric="Revenue" aria-pressed="true"><span>Revenue</span><span class="state">reported</span></button>
-      <button class="metric" data-metric="Operating Income" aria-pressed="false"><span>Operating income</span><span class="state">reported</span></button>
-      <button class="metric" data-metric="Net Income" aria-pressed="false"><span>Net income</span><span class="state">reported</span></button>
-      <button class="metric" data-metric="Total Assets" aria-pressed="false"><span>Total assets</span><span class="state">reported</span></button>
-      <button class="metric" data-metric="Total Liabilities" aria-pressed="false"><span>Total liabilities</span><span class="state">reported</span></button>
-      <button class="metric" data-metric="Equity" aria-pressed="false"><span>Equity</span><span class="state issue">conflict</span></button>
-      <button class="metric" data-metric="Operating Cash Flow" aria-pressed="false"><span>Operating cash flow</span><span class="state pending">unresolved</span></button>
-      <div class="notice"><strong>1 item needs review</strong><br><span class="subtitle">Equity FY2024 has two conflicting eligible facts.</span></div>
-    </aside>
+  <main class="page">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">Stored filing evidence</p>
+      <h1 id="page-title">Choose a company. Choose a range. Download.</h1>
+      <p class="intro-copy">A simple starting point for financial data and filing-section exports.</p>
 
-    <section class="center">
-      <div class="toolbar">
-        <div><h1 id="metric-title">Revenue trend</h1><p class="subtitle" id="metric-subtitle">Six most recent filed 10-Q periods · USD millions</p></div>
-        <div class="period-toggle"><button aria-pressed="false">Annual</button><button aria-pressed="true">Quarterly</button></div>
+      <form class="company-search" id="company-form">
+        <label class="search-shell" for="company-input">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="company-input" list="stored-companies" value="Apple Inc. (AAPL)" placeholder="Search company name or ticker" autocomplete="off">
+        </label>
+        <datalist id="stored-companies">
+          <option value="Apple Inc. (AAPL)"></option>
+          <option value="Microsoft Corp. (MSFT)"></option>
+          <option value="NVIDIA Corp. (NVDA)"></option>
+        </datalist>
+        <button class="search-button" type="submit">Select</button>
+      </form>
+
+      <div class="company-strip">
+        <div class="company-identity"><span class="company-name" id="company-name">Apple Inc.</span><span class="company-ticker" id="company-ticker">AAPL</span></div>
+        <div class="filing-freshness" aria-label="Latest filing accession dates">
+          <div class="filing-update">
+            <span class="filing-update-label">Latest annual · 10-K</span>
+            <strong id="annual-filing-date">Oct 31, 2025</strong>
+            <span class="accession-line">Accession <code id="annual-accession">0000320193-25-000079</code></span>
+          </div>
+          <div class="filing-update">
+            <span class="filing-update-label">Latest quarterly · 10-Q</span>
+            <strong id="quarterly-filing-date">Jul 31, 2026</strong>
+            <span class="accession-line">Accession <code id="quarterly-accession">0000320193-26-000020</code></span>
+          </div>
+        </div>
+        <div class="stored-state"><i aria-hidden="true"></i><span>Using verified stored evidence</span></div>
       </div>
-      <div class="summary">
-        <div><strong id="latest-value">$65,585M</strong><span>latest value</span></div>
-        <div><strong id="change-value">+10.1%</strong><span>year over year</span></div>
-        <div><strong id="coverage-value">6 / 6</strong><span>periods resolved</span></div>
-      </div>
-      <div class="chart-wrap">
-        <div class="chart-note"><span>Click any point to inspect its proof</span><span id="chart-state">All points reported</span></div>
-        <svg viewBox="0 0 720 300" role="img" aria-label="Financial metric trend chart">
-          <line class="grid" x1="58" y1="45" x2="690" y2="45"/><line class="grid" x1="58" y1="115" x2="690" y2="115"/><line class="grid" x1="58" y1="185" x2="690" y2="185"/><line class="grid" x1="58" y1="255" x2="690" y2="255"/>
-          <line class="axis" x1="58" y1="255" x2="690" y2="255"/><line class="axis" x1="58" y1="35" x2="58" y2="255"/>
-          <text class="label" x="8" y="49">$70B</text><text class="label" x="8" y="119">$60B</text><text class="label" x="8" y="189">$50B</text><text class="label" x="8" y="259">$40B</text>
-          <path id="trend" class="trend" d="M80 207 L195 180 L310 148 L425 126 L540 90 L655 62"/>
-          <g id="points">
-            <circle class="point" data-index="0" cx="80" cy="207" r="6"/><circle class="point" data-index="1" cx="195" cy="180" r="6"/><circle class="point" data-index="2" cx="310" cy="148" r="6"/><circle class="point" data-index="3" cx="425" cy="126" r="6"/><circle class="point" data-index="4" cx="540" cy="90" r="6"/><circle class="point selected" data-index="5" cx="655" cy="62" r="6"/>
-          </g>
-          <text class="label" x="61" y="278">FY24 Q1</text><text class="label" x="176" y="278">FY24 Q2</text><text class="label" x="291" y="278">FY24 Q3</text><text class="label" x="406" y="278">FY25 Q1</text><text class="label" x="521" y="278">FY25 Q2</text><text class="label" x="636" y="278">FY25 Q3</text>
-        </svg>
-        <div class="legend"><span><i></i> Reported</span><span><i class="m"></i> Missing or unresolved</span><span><i class="u"></i> Needs review</span></div>
-      </div>
-      <div class="notice"><strong>Partial and failure behavior</strong> · A missing period stays as a labeled gap. A refresh failure keeps the last verified publication visible and reports the failed run separately.</div>
     </section>
 
-    <!-- Evidence stays adjacent to the chart: one click from claim to source. -->
-    <aside class="evidence">
-      <div class="evidence-head"><div><p class="eyebrow">Point evidence</p><h2 id="evidence-period">Revenue · FY2025 Q3</h2></div><span class="state" id="evidence-state">reported</span></div>
-      <div class="value" id="evidence-value">$65,585M</div>
-      <div class="subtitle">Planned evidence presentation · demo value only</div>
-      <dl>
-        <dt>Concept</dt><dd><code id="concept">us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax</code></dd>
-        <dt>Period</dt><dd id="period">2025-01-01 → 2025-03-31 (duration)</dd>
-        <dt>Filing</dt><dd><code>0000950170-25-049122</code> · 10-Q</dd>
-        <dt>Mapping</dt><dd id="mapping">Direct mapping · primary candidate</dd>
-        <dt>Validation</dt><dd>No blocking Arelle validation finding linked to this fact.</dd>
-      </dl>
-      <div class="derivation" id="derivation" hidden><strong>Unresolved metric</strong><br>No approved direct mapping exists for this demo period. LLM recommendation and human review remain planned; no quarter value is derived from YTD facts.</div>
-      <div class="actions">
-        <button class="primary">Download this point + evidence (planned)</button>
-        <button>Download metric bundle (planned)</button>
-        <button>Open filing source (planned)</button>
+    <section class="download-card" data-card="data" aria-labelledby="data-title">
+      <header class="card-head">
+        <div>
+          <p class="card-kicker">Data</p>
+          <h2 id="data-title">Financial data</h2>
+          <p class="card-copy">The seven standardized metrics with their exact filing lineage.</p>
+        </div>
+        <div class="segmented" aria-label="Financial data period type">
+          <button class="segment" type="button" data-mode="annual" aria-pressed="true">Annual</button>
+          <button class="segment" type="button" data-mode="quarterly" aria-pressed="false">Quarterly</button>
+        </div>
+      </header>
+
+      <div class="controls">
+        <div class="range-field">
+          <span class="field-label">Year range</span>
+          <div class="range-shell">
+            <div class="range-track"></div>
+            <div class="range-fill"></div>
+            <input class="range-start" type="range" min="2008" max="2026" value="2010" aria-label="Financial data start year">
+            <input class="range-end" type="range" min="2008" max="2026" value="2015" aria-label="Financial data end year">
+          </div>
+          <div class="range-scale" aria-live="polite"><span>2008</span><strong class="range-start-value">2010</strong><strong class="range-end-value">2015</strong><span>2026</span></div>
+        </div>
+        <div class="period-choice-field">
+          <span class="field-label">Periods</span>
+          <label class="period-choice">
+            <input class="all-periods-check" type="checkbox">
+            <span><strong>All available periods</strong><small>Use the complete stored range</small></span>
+          </label>
+        </div>
       </div>
-    </aside>
+
+      <div class="action-row">
+        <p class="action-summary" aria-live="polite"></p>
+        <button class="download-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Download data</button>
+      </div>
+    </section>
+
+    <section class="download-card" data-card="sections" aria-labelledby="sections-title">
+      <header class="card-head">
+        <div>
+          <p class="card-kicker">Filings</p>
+          <h2 id="sections-title">Filing sections</h2>
+          <p class="card-copy">Choose the filing items you want without opening each filing.</p>
+        </div>
+        <div class="segmented" aria-label="Filing section period type">
+          <button class="segment" type="button" data-mode="annual" aria-pressed="true">Annual</button>
+          <button class="segment" type="button" data-mode="quarterly" aria-pressed="false">Quarterly</button>
+        </div>
+      </header>
+
+      <div class="controls">
+        <div class="range-field">
+          <span class="field-label">Year range</span>
+          <div class="range-shell">
+            <div class="range-track"></div>
+            <div class="range-fill"></div>
+            <input class="range-start" type="range" min="2008" max="2026" value="2008" aria-label="Filing section start year">
+            <input class="range-end" type="range" min="2008" max="2026" value="2008" aria-label="Filing section end year">
+          </div>
+          <div class="range-scale" aria-live="polite"><span>2008</span><strong class="range-start-value">2008</strong><strong class="range-end-value">2008</strong><span>2026</span></div>
+        </div>
+        <div class="period-choice-field">
+          <span class="field-label">Periods</span>
+          <label class="period-choice">
+            <input class="all-periods-check" type="checkbox">
+            <span><strong>All available periods</strong><small>Use the complete stored range</small></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section-picker">
+        <span class="field-label">Sections</span>
+        <div class="section-options" aria-label="Filing sections"></div>
+      </div>
+
+      <div class="action-row">
+        <p class="action-summary" aria-live="polite"></p>
+        <button class="download-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Download sections</button>
+      </div>
+    </section>
+
+    <p class="truth-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
+      <span>This is an interactive structure prototype. The local download API and production company search are still planned.</span>
+    </p>
   </main>
-  <footer>Planned frontend state sketch · demo data · no implemented mapping or downloads</footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
-    // Small interaction proves the main information architecture without committing to a frontend framework.
-    const series = {
-      "Revenue": { values:[46.98, 52.75, 56.19, 56.52, 62.02, 65.59], labels:["$46,980M","$52,747M","$56,189M","$56,517M","$62,020M","$65,585M"], state:"reported", latest:"$65,585M", change:"+10.1%", coverage:"6 / 6", concept:"us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", mapping:"Planned direct mapping · demo candidate", pending:false },
-      "Operating Cash Flow": { values:[0,0,0,0,0,0], labels:["—","—","—","—","—","—"], state:"unresolved", latest:"—", change:"—", coverage:"0 / 6", concept:"No selected concept", mapping:"Direct mapping and LLM recommendation are planned", pending:true }
+    const companies = {
+      AAPL:{name:"Apple Inc.",ticker:"AAPL",annual:{date:"Oct 31, 2025",accession:"0000320193-25-000079"},quarterly:{date:"Jul 31, 2026",accession:"0000320193-26-000020"}},
+      MSFT:{name:"Microsoft Corp.",ticker:"MSFT",annual:{date:"Jul 29, 2026",accession:"0001193125-26-323660"},quarterly:{date:"Apr 29, 2026",accession:"0001193125-26-191507"}},
+      NVDA:{name:"NVIDIA Corp.",ticker:"NVDA",annual:{date:"Feb 25, 2026",accession:"0001045810-26-000021"},quarterly:{date:"Aug 26, 2026",accession:"0001045810-26-000075"}}
     };
-    let current = "Revenue";
-    const x = [80,195,310,425,540,655];
-    function draw(name) {
-      current = name; const s = series[name] || series.Revenue;
-      document.querySelectorAll('.metric').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.metric === name)));
-      document.getElementById('metric-title').textContent = name + ' trend';
-      document.getElementById('latest-value').textContent = s.latest;
-      document.getElementById('change-value').textContent = s.change;
-      document.getElementById('coverage-value').textContent = s.coverage;
-      document.getElementById('chart-state').textContent = s.pending ? 'No approved mapping for these demo periods' : 'All points reported';
-      const min = Math.min(...s.values), max = Math.max(...s.values), span = Math.max(max-min, 1);
-      const y = s.values.map(v => 230 - ((v-min)/span)*160);
-      document.getElementById('trend').setAttribute('d', x.map((n,i)=>(i?'L':'M')+n+' '+y[i]).join(' '));
-      document.querySelectorAll('.point').forEach((p,i) => { p.setAttribute('cy', y[i]); p.classList.toggle('selected', i===5); });
-      showPoint(5);
+    const sectionSets = {
+      annual:[
+        ["all","All sections"],
+        ["item_1","Business"],
+        ["item_1a","Risk Factors"],
+        ["item_3","Legal Proceedings"],
+        ["item_7","Management’s Discussion & Analysis"],
+        ["item_7a","Market Risk"],
+        ["item_8","Financial Statements & Notes"]
+      ],
+      quarterly:[
+        ["all","All sections"],
+        ["part_i_item_1","Financial Statements"],
+        ["part_i_item_2","Management’s Discussion & Analysis"],
+        ["part_i_item_3","Market Risk"],
+        ["part_i_item_4","Controls & Procedures"],
+        ["part_ii_item_1","Legal Proceedings"],
+        ["part_ii_item_1a","Risk Factors"]
+      ]
+    };
+
+    let company = companies.AAPL;
+    let toastTimer;
+
+    function cardMode(card) {
+      return card.querySelector('.segment[aria-pressed="true"]').dataset.mode;
     }
-    function showPoint(i) {
-      const s = series[current] || series.Revenue;
-      document.querySelectorAll('.point').forEach((p,n)=>p.classList.toggle('selected', n===i));
-      document.getElementById('evidence-period').textContent = current + ' · ' + ['FY2024 Q1','FY2024 Q2','FY2024 Q3','FY2025 Q1','FY2025 Q2','FY2025 Q3'][i];
-      document.getElementById('evidence-value').textContent = s.labels[i];
-      document.getElementById('evidence-state').textContent = s.state;
-      document.getElementById('concept').textContent = s.concept;
-      document.getElementById('mapping').textContent = s.mapping;
-      document.getElementById('derivation').hidden = !s.pending;
+
+    function formatYearRange(start, end) {
+      return start === end ? start : `${start}–${end}`;
     }
-    document.querySelectorAll('.metric').forEach(b=>b.addEventListener('click',()=>draw(b.dataset.metric)));
-    document.querySelectorAll('.point').forEach(p=>p.addEventListener('click',()=>showPoint(Number(p.dataset.index))));
+
+    function normalizeRange(card, changed) {
+      const start = card.querySelector('.range-start');
+      const end = card.querySelector('.range-end');
+      if (Number(start.value) > Number(end.value)) {
+        if (changed === start) end.value = start.value;
+        else start.value = end.value;
+      }
+      const min = Number(start.min), max = Number(start.max), span = max - min;
+      const left = ((Number(start.value) - min) / span) * 100;
+      const right = ((Number(end.value) - min) / span) * 100;
+      const fill = card.querySelector('.range-fill');
+      fill.style.left = `${left}%`;
+      fill.style.width = `${right - left}%`;
+      const startValue = card.querySelector('.range-start-value');
+      const endValue = card.querySelector('.range-end-value');
+      startValue.style.left = `${left}%`;
+      endValue.style.left = `${right}%`;
+      startValue.textContent = start.value;
+      endValue.textContent = end.value;
+      const rangeScale = startValue.parentElement;
+      const isSingleYear = start.value === end.value;
+      const startAtMin = Number(start.value) === min;
+      const startAtMax = Number(start.value) === max;
+      const endAtMin = Number(end.value) === min;
+      const endAtMax = Number(end.value) === max;
+      startValue.classList.toggle('at-min',startAtMin);
+      startValue.classList.toggle('at-max',startAtMax);
+      endValue.classList.toggle('at-min',endAtMin);
+      endValue.classList.toggle('at-max',endAtMax);
+      endValue.hidden = isSingleYear;
+      rangeScale.classList.toggle('at-min',startAtMin);
+      rangeScale.classList.toggle('at-max',endAtMax);
+    }
+
+    function renderSectionOptions(card) {
+      const mode = cardMode(card);
+      const options = card.querySelector('.section-options');
+      options.innerHTML = sectionSets[mode].map(([key,label]) =>
+        `<label class="section-option"><input type="checkbox" value="${key}" ${key === 'all' ? 'checked' : ''}><span>${label}</span></label>`
+      ).join('');
+      options.querySelectorAll('input').forEach(input => input.addEventListener('change', event => {
+        const all = options.querySelector('input[value="all"]');
+        const individuals = [...options.querySelectorAll('input:not([value="all"])')];
+        if (event.target === all) individuals.forEach(item => item.checked = all.checked);
+        else {
+          all.checked = individuals.every(item => item.checked);
+          if (!individuals.some(item => item.checked)) all.checked = false;
+        }
+        updateCard(card);
+      }));
+      updateCard(card);
+    }
+
+    function selectionDescription(card) {
+      const all = card.querySelector('.section-options input[value="all"]');
+      const checked = [...card.querySelectorAll('.section-options input:not([value="all"]):checked')];
+      const total = card.querySelectorAll('.section-options input:not([value="all"])').length;
+      if (all && all.checked) return `all ${total} filing sections`;
+      if (checked.length === total) return `all ${total} filing sections`;
+      if (checked.length === 0) return 'no filing sections';
+      if (checked.length === 1) return checked[0].nextElementSibling.textContent;
+      return `${checked.length} filing sections`;
+    }
+
+    function updateCard(card) {
+      normalizeRange(card);
+      const mode = cardMode(card);
+      const start = card.querySelector('.range-start').value;
+      const end = card.querySelector('.range-end').value;
+      const yearRange = formatYearRange(start,end);
+      const allPeriods = card.querySelector('.all-periods-check').checked;
+      const summary = card.querySelector('.action-summary');
+      if (card.dataset.card === 'data') {
+        summary.innerHTML = allPeriods
+          ? `Download <strong>all 7 metrics</strong> for <strong>${company.name}</strong> across all available ${mode} periods, ${yearRange}.`
+          : `Download <strong>all 7 metrics</strong> as ${mode} data for <strong>${company.name}</strong>, ${yearRange}.`;
+      } else {
+        const scope = selectionDescription(card);
+        summary.innerHTML = allPeriods
+          ? `Download <strong>${scope}</strong> from all available ${mode} filings for <strong>${company.name}</strong>, ${yearRange}.`
+          : `Download <strong>${scope}</strong> from ${mode} filings for <strong>${company.name}</strong>, ${yearRange}.`;
+      }
+    }
+
+    function setAllPeriods(card, useAll) {
+      const rangeField = card.querySelector('.range-field');
+      const start = card.querySelector('.range-start');
+      const end = card.querySelector('.range-end');
+      if (useAll) {
+        start.dataset.customValue = start.value;
+        end.dataset.customValue = end.value;
+        start.value = start.min;
+        end.value = end.max;
+      } else {
+        start.value = start.dataset.customValue || start.value;
+        end.value = end.dataset.customValue || end.value;
+      }
+      start.disabled = useAll;
+      end.disabled = useAll;
+      rangeField.classList.toggle('is-all',useAll);
+      updateCard(card);
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
+    }
+
+    document.querySelectorAll('.download-card').forEach(card => {
+      card.querySelectorAll('.segment').forEach(button => button.addEventListener('click', () => {
+        card.querySelectorAll('.segment').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        if (card.dataset.card === 'sections') renderSectionOptions(card);
+        else updateCard(card);
+      }));
+      card.querySelectorAll('input[type="range"]').forEach(input => input.addEventListener('input', () => {
+        input.dataset.customValue = input.value;
+        normalizeRange(card,input);
+        updateCard(card);
+      }));
+      card.querySelector('.all-periods-check').addEventListener('change', event => setAllPeriods(card,event.target.checked));
+      card.querySelector('.download-button').addEventListener('click', () => showToast('Prototype only — connect this action to the local download API in the implementation milestone.'));
+      normalizeRange(card);
+      if (card.dataset.card === 'sections') renderSectionOptions(card);
+      else updateCard(card);
+    });
+
+    document.getElementById('company-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const raw = document.getElementById('company-input').value.toUpperCase();
+      const match = Object.values(companies).find(item => raw.includes(item.ticker));
+      if (!match) {
+        showToast('This standalone prototype includes AAPL, MSFT, and NVDA search examples.');
+        return;
+      }
+      company = match;
+      document.getElementById('company-name').textContent = company.name;
+      document.getElementById('company-ticker').textContent = company.ticker;
+      document.getElementById('annual-filing-date').textContent = company.annual.date;
+      document.getElementById('annual-accession').textContent = company.annual.accession;
+      document.getElementById('quarterly-filing-date').textContent = company.quarterly.date;
+      document.getElementById('quarterly-accession').textContent = company.quarterly.accession;
+      document.getElementById('company-input').value = `${company.name} (${company.ticker})`;
+      document.querySelectorAll('.download-card').forEach(updateCard);
+    });
   </script>
 </body>
 </html>
