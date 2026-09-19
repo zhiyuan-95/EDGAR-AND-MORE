@@ -153,6 +153,149 @@
       background:var(--paper);
       box-shadow:var(--shadow);
     }
+    .workspace-tabs {
+      display:flex;
+      gap:8px;
+      margin:0 0 18px;
+      padding:4px;
+      border:1px solid var(--line);
+      background:#e6e6e6;
+    }
+    .workspace-tab {
+      flex:1;
+      min-width:0;
+      min-height:48px;
+      padding:9px 16px;
+      border:0;
+      border-bottom:4px solid transparent;
+      color:var(--muted);
+      background:transparent;
+      font-weight:800;
+      cursor:pointer;
+    }
+    .workspace-tab[aria-selected="true"] {
+      border-bottom-color:var(--gold);
+      color:#fff;
+      background:var(--navy);
+    }
+    .workspace-panel[hidden] { display:none; }
+
+    .comparison-card {
+      overflow:hidden;
+      min-width:0;
+      border:1px solid var(--line);
+      border-top:5px solid var(--navy);
+      background:var(--paper);
+      box-shadow:var(--shadow);
+    }
+    .comparison-card .card-head { align-items:center; }
+    .schema-badge {
+      display:inline-flex;
+      align-items:center;
+      gap:7px;
+      padding:7px 10px;
+      border:1px solid #a9c8dc;
+      color:var(--blue-dark);
+      background:#fff;
+      font-size:11px;
+      font-weight:800;
+      letter-spacing:.04em;
+      text-transform:uppercase;
+      white-space:nowrap;
+    }
+    .schema-badge i { width:7px; height:7px; border-radius:50%; background:var(--blue); }
+    .comparison-controls {
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:18px;
+      padding:22px 24px;
+      border-bottom:1px solid var(--line);
+    }
+    .comparison-field label,.comparison-field .field-label { margin-bottom:7px; }
+    .comparison-field { min-width:0; }
+    .comparison-field select {
+      width:100%;
+      min-width:0;
+      min-height:44px;
+      padding:8px 34px 8px 11px;
+      border:1px solid var(--line-strong);
+      border-radius:2px;
+      color:var(--ink);
+      background:#fff;
+    }
+    .comparison-field select:disabled { color:#8a8f94; background:#f0f0f0; cursor:not-allowed; }
+    .measure-help { display:block; margin-top:6px; color:var(--muted); font-size:11px; line-height:1.35; }
+
+    .comparison-results { padding:22px 24px 0; }
+    .comparison-results-head {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:20px;
+      margin-bottom:14px;
+    }
+    .comparison-results-head h3 { margin:0; color:var(--navy); font:700 20px/1.25 Georgia,"Times New Roman",serif; }
+    .comparison-results-head p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+    .availability-badge {
+      flex:0 0 auto;
+      padding:5px 9px;
+      border:1px solid #8fb7cf;
+      color:var(--blue-dark);
+      background:var(--blue-soft);
+      font-size:11px;
+      font-weight:800;
+    }
+    .availability-badge.is-planned { border-color:#c9a227; color:#5f4500; background:#fff4ce; }
+
+    .comparison-overview {
+      display:grid;
+      grid-template-columns:minmax(0,1fr) 150px minmax(0,1fr);
+      gap:14px;
+      align-items:stretch;
+      margin-bottom:18px;
+    }
+    .company-value,.difference-card {
+      min-width:0;
+      padding:14px 16px;
+      border:1px solid var(--line);
+      background:#f8fafc;
+    }
+    .company-value { border-left:4px solid var(--blue); }
+    .company-value.is-peer { border-left-color:var(--gold-dark); }
+    .company-value span,.difference-card span { display:block; color:var(--muted); font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+    .company-value strong,.difference-card strong { display:block; margin-top:3px; color:var(--navy); font-size:22px; line-height:1.2; }
+    .company-value small,.difference-card small { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
+    .difference-card { display:grid; align-content:center; text-align:center; background:#f0f0f0; }
+    .difference-card strong { font-size:18px; }
+
+    .comparison-table-wrap { overflow-x:auto; max-width:100%; border:1px solid var(--line); }
+    .comparison-table { width:100%; border-collapse:collapse; min-width:660px; }
+    .comparison-table th,.comparison-table td { padding:11px 13px; border-bottom:1px solid var(--line); text-align:right; font-size:13px; }
+    .comparison-table th { color:var(--navy); background:#eef5f9; font-size:11px; letter-spacing:.035em; text-transform:uppercase; }
+    .comparison-table th:first-child,.comparison-table td:first-child { text-align:left; }
+    .comparison-table tbody tr:last-child td { border-bottom:0; }
+    .comparison-table .missing-value { color:var(--muted); font-style:italic; }
+    .value-status { display:inline-block; margin-left:5px; color:var(--green); font-size:10px; font-weight:800; text-transform:uppercase; }
+    .value-status.is-derived { color:var(--blue-dark); }
+    .comparison-empty {
+      padding:28px 18px;
+      color:var(--muted);
+      background:#fafafa;
+      text-align:center;
+    }
+    .comparison-empty strong { display:block; margin-bottom:5px; color:var(--navy); }
+    .comparison-contract {
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:14px;
+      margin:18px -24px 0;
+      padding:16px 24px;
+      border-top:1px solid var(--line);
+      border-bottom:3px solid var(--gold);
+      background:#f0f0f0;
+    }
+    .contract-item span { display:block; color:var(--muted); font-size:10px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+    .contract-item code { display:block; overflow:hidden; margin-top:3px; color:var(--ink); font:12px/1.4 ui-monospace,Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; }
     .card-head {
       display:flex;
       align-items:flex-start;
@@ -363,16 +506,30 @@
       .controls { grid-template-columns:1fr; gap:22px; }
       .download-button { width:100%; }
       .stored-state { text-align:left; }
+      .comparison-card .card-head,.comparison-results-head { align-items:flex-start; }
+      .comparison-results-head { flex-direction:column; }
+      .comparison-controls { grid-template-columns:1fr 1fr; }
+      .comparison-overview { grid-template-columns:1fr; }
+      .difference-card { text-align:left; }
+      .comparison-contract { grid-template-columns:1fr; gap:10px; }
+    }
+
+    @media (max-width:600px) {
+      .workspace-tabs { display:grid; grid-template-columns:1fr; }
+      .comparison-controls { grid-template-columns:1fr; padding-right:18px; padding-left:18px; }
+      .filing-freshness { display:grid; grid-template-columns:1fr; gap:10px; }
+      .filing-update { width:100%; padding:0; border-left:0; }
     }
 
     @media (max-width:470px) {
-      .filing-freshness { display:grid; grid-template-columns:1fr; gap:10px; }
-      .filing-update { width:100%; padding:0; border-left:0; }
       .card-head { padding:19px 18px 16px; }
       .controls,.section-picker { padding-right:18px; padding-left:18px; }
       .action-row { padding:17px 18px; }
       .segmented { width:100%; }
       .segment { flex:1; }
+      .comparison-results { padding-right:18px; padding-left:18px; }
+      .comparison-contract { margin-right:-18px; margin-left:-18px; padding-right:18px; padding-left:18px; }
+      .schema-badge { white-space:normal; }
     }
   </style>
 </head>
@@ -390,8 +547,8 @@
   <main class="page">
     <section class="intro" aria-labelledby="page-title">
       <p class="eyebrow">Stored filing evidence</p>
-      <h1 id="page-title">Choose a company. Choose a range. Download.</h1>
-      <p class="intro-copy">A simple starting point for financial data and filing-section exports.</p>
+      <h1 id="page-title">Explore company evidence. Compare what matters.</h1>
+      <p class="intro-copy">Download stored financial evidence or compare two companies across a shared metric or financial indicator.</p>
 
       <form class="company-search" id="company-form">
         <label class="search-shell" for="company-input">
@@ -424,6 +581,12 @@
       </div>
     </section>
 
+    <nav class="workspace-tabs" role="tablist" aria-label="Analyst workspace">
+      <button class="workspace-tab" id="downloads-tab" type="button" role="tab" aria-controls="downloads-panel" aria-selected="true">Data &amp; filing downloads</button>
+      <button class="workspace-tab" id="comparison-tab" type="button" role="tab" aria-controls="comparison-panel" aria-selected="false">Company comparison</button>
+    </nav>
+
+    <div class="workspace-panel" id="downloads-panel" role="tabpanel" aria-labelledby="downloads-tab">
     <section class="download-card" data-card="data" aria-labelledby="data-title">
       <header class="card-head">
         <div>
@@ -506,10 +669,71 @@
         <button class="download-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Download sections</button>
       </div>
     </section>
+    </div>
+
+    <section class="workspace-panel comparison-card" id="comparison-panel" role="tabpanel" aria-labelledby="comparison-tab" hidden>
+      <header class="card-head">
+        <div>
+          <p class="card-kicker">Analysis</p>
+          <h2>Compare companies</h2>
+          <p class="card-copy">Use the same measure definition and reporting basis for both companies.</p>
+        </div>
+        <span class="schema-badge"><i aria-hidden="true"></i>Schema-ready prototype</span>
+      </header>
+
+      <div class="comparison-controls">
+        <div class="comparison-field">
+          <label class="field-label" for="comparison-company-a">Company A</label>
+          <select id="comparison-company-a"></select>
+        </div>
+        <div class="comparison-field">
+          <label class="field-label" for="comparison-company-b">Company B</label>
+          <select id="comparison-company-b"></select>
+        </div>
+        <div class="comparison-field">
+          <span class="field-label">Measure type</span>
+          <div class="segmented" aria-label="Comparison measure type">
+            <button class="segment comparison-kind" type="button" data-kind="metric" aria-pressed="true">Metrics</button>
+            <button class="segment comparison-kind" type="button" data-kind="indicator" aria-pressed="false">Indicators</button>
+          </div>
+        </div>
+        <div class="comparison-field">
+          <label class="field-label" for="comparison-report-kind">Reporting basis</label>
+          <select id="comparison-report-kind">
+            <option value="annual">Annual</option>
+            <option value="quarterly">Quarterly</option>
+          </select>
+        </div>
+        <div class="comparison-field" style="grid-column:1 / -1">
+          <label class="field-label" for="comparison-measure">Metric or indicator</label>
+          <select id="comparison-measure"></select>
+          <span class="measure-help" id="comparison-measure-help"></span>
+        </div>
+      </div>
+
+      <div class="comparison-results" aria-live="polite">
+        <div class="comparison-results-head">
+          <div>
+            <h3 id="comparison-title"></h3>
+            <p id="comparison-subtitle"></p>
+          </div>
+          <span class="availability-badge" id="comparison-availability"></span>
+        </div>
+
+        <div class="comparison-overview" id="comparison-overview"></div>
+        <div class="comparison-table-wrap" id="comparison-table-wrap"></div>
+
+        <div class="comparison-contract" aria-label="Comparison data contract">
+          <div class="contract-item"><span>Measure identity</span><code id="comparison-contract-key"></code></div>
+          <div class="contract-item"><span>Value format</span><code id="comparison-contract-format"></code></div>
+          <div class="contract-item"><span>Evidence / method</span><code id="comparison-contract-source"></code></div>
+        </div>
+      </div>
+    </section>
 
     <p class="truth-note">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
-      <span>This is an interactive structure prototype. The local download API and production company search are still planned.</span>
+      <span>This is an interactive structure prototype. Comparison values are illustrative; the local read API, indicator calculations, downloads, and production company search are still planned.</span>
     </p>
   </main>
 
@@ -540,6 +764,32 @@
         ["part_ii_item_1","Legal Proceedings"],
         ["part_ii_item_1a","Risk Factors"]
       ]
+    };
+    const comparisonSchema = {
+      periods:{
+        annual:["FY 2023","FY 2024","FY 2025"],
+        quarterly:["Q4 FY2025","Q1 FY2026","Q2 FY2026"]
+      },
+      measures:{
+        metric:[
+          {key:"revenue",label:"Revenue",format:"currency",unit:"USD billions",periodType:"duration",source:"metric_result → selected filing fact",availability:"published",sampleBase:260,sampleTrend:.10},
+          {key:"operating_income",label:"Operating Income",format:"currency",unit:"USD billions",periodType:"duration",source:"metric_result → selected filing fact",availability:"published",sampleBase:82,sampleTrend:.11},
+          {key:"net_income",label:"Net Income",format:"currency",unit:"USD billions",periodType:"duration",source:"metric_result → selected filing fact",availability:"published",sampleBase:68,sampleTrend:.09},
+          {key:"total_assets",label:"Total Assets",format:"currency",unit:"USD billions",periodType:"instant",source:"metric_result → selected filing fact",availability:"published",sampleBase:310,sampleTrend:.06},
+          {key:"total_liabilities",label:"Total Liabilities",format:"currency",unit:"USD billions",periodType:"instant",source:"metric_result → selected filing fact",availability:"published",sampleBase:205,sampleTrend:.05},
+          {key:"equity",label:"Equity",format:"currency",unit:"USD billions",periodType:"instant",source:"metric_result → selected filing fact",availability:"published",sampleBase:105,sampleTrend:.08},
+          {key:"operating_cash_flow",label:"Operating Cash Flow",format:"currency",unit:"USD billions",periodType:"duration",source:"metric_result → selected filing fact",availability:"published",sampleBase:76,sampleTrend:.10}
+        ],
+        indicator:[
+          {key:"gross_margin",label:"Gross Margin",format:"percent",unit:"percent",periodType:"duration",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:48,sampleTrend:.02},
+          {key:"operating_margin",label:"Operating Margin",format:"percent",unit:"percent",periodType:"duration",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:29,sampleTrend:.03},
+          {key:"net_margin",label:"Net Margin",format:"percent",unit:"percent",periodType:"duration",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:24,sampleTrend:.02},
+          {key:"return_on_assets",label:"Return on Assets",format:"percent",unit:"percent",periodType:"mixed",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:18,sampleTrend:.025},
+          {key:"debt_to_equity",label:"Debt to Equity",format:"ratio",unit:"ratio",periodType:"instant",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:1.35,sampleTrend:-.03},
+          {key:"free_cash_flow_margin",label:"Free Cash Flow Margin",format:"percent",unit:"percent",periodType:"duration",source:"indicator_result → formula inputs + version",availability:"planned",sampleBase:20,sampleTrend:.035},
+          {key:"price_to_earnings",label:"Price to Earnings (P/E)",format:"ratio",unit:"ratio",periodType:"market-date",source:"indicator_result → EPS + dated market price",availability:"planned",sampleBase:31,sampleTrend:.04}
+        ]
+      }
     };
 
     let company = companies.AAPL;
@@ -670,6 +920,134 @@
       toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
     }
 
+    function comparisonKind() {
+      return document.querySelector('.comparison-kind[aria-pressed="true"]').dataset.kind;
+    }
+
+    function measureForSelection() {
+      const measures = comparisonSchema.measures[comparisonKind()];
+      return measures.find(item => item.key === document.getElementById('comparison-measure').value) || measures[0];
+    }
+
+    function formatComparisonValue(value, measure, signed = false) {
+      if (value === null || Number.isNaN(value)) return '—';
+      const sign = value < 0 ? '-' : signed && value > 0 ? '+' : '';
+      const magnitude = Math.abs(value);
+      if (measure.format === 'currency') return `${sign}$${magnitude.toFixed(1)}B`;
+      if (measure.format === 'percent') return `${sign}${magnitude.toFixed(1)}%`;
+      return `${sign}${magnitude.toFixed(2)}×`;
+    }
+
+    function illustrativeSeries(measure, ticker, reportKind) {
+      const companyFactor = {AAPL:1.08,MSFT:.94,NVDA:.72}[ticker];
+      const companyTrend = {AAPL:.01,MSFT:.035,NVDA:.12}[ticker];
+      const periodScale = reportKind === 'quarterly' && measure.format === 'currency' && measure.periodType === 'duration' ? .26 : 1;
+      return [-1,0,1].map(offset => {
+        const trend = 1 + offset * (measure.sampleTrend + companyTrend);
+        const value = measure.sampleBase * companyFactor * periodScale * trend;
+        return Math.max(0,value);
+      });
+    }
+
+    function renderComparisonMeasureOptions(preferredKey) {
+      const kind = comparisonKind();
+      const select = document.getElementById('comparison-measure');
+      const measures = comparisonSchema.measures[kind];
+      select.innerHTML = measures.map(item => `<option value="${item.key}">${item.label}</option>`).join('');
+      if (preferredKey && measures.some(item => item.key === preferredKey)) select.value = preferredKey;
+      renderComparison();
+    }
+
+    function renderComparison() {
+      const tickerA = document.getElementById('comparison-company-a').value;
+      const tickerB = document.getElementById('comparison-company-b').value;
+      const reportKind = document.getElementById('comparison-report-kind').value;
+      const measure = measureForSelection();
+      const kind = comparisonKind();
+      const help = document.getElementById('comparison-measure-help');
+      const availability = document.getElementById('comparison-availability');
+      const overview = document.getElementById('comparison-overview');
+      const tableWrap = document.getElementById('comparison-table-wrap');
+
+      help.textContent = `${measure.periodType} measure · ${measure.unit} · ${measure.source}`;
+      document.getElementById('comparison-title').textContent = measure.label;
+      document.getElementById('comparison-subtitle').textContent = `Illustrative ${reportKind} values using one shared ${kind} definition. Company fiscal calendars can differ.`;
+      availability.textContent = measure.availability === 'published' ? 'Published metric schema' : 'Planned indicator schema';
+      availability.classList.toggle('is-planned',measure.availability !== 'published');
+      document.getElementById('comparison-contract-key').textContent = `${kind}.${measure.key}`;
+      document.getElementById('comparison-contract-format').textContent = `${measure.format} · ${measure.unit} · ${measure.periodType}`;
+      document.getElementById('comparison-contract-source').textContent = measure.source;
+
+      if (tickerA === tickerB) {
+        overview.innerHTML = '';
+        tableWrap.innerHTML = '<div class="comparison-empty"><strong>Choose two different companies.</strong>The comparison endpoint should reject identical company identifiers.</div>';
+        return;
+      }
+
+      const periods = comparisonSchema.periods[reportKind];
+      const seriesA = illustrativeSeries(measure,tickerA,reportKind);
+      const seriesB = illustrativeSeries(measure,tickerB,reportKind);
+      const latestA = seriesA[seriesA.length - 1];
+      const latestB = seriesB[seriesB.length - 1];
+      const difference = latestB - latestA;
+      overview.innerHTML = `
+        <div class="company-value"><span>${companies[tickerA].name}</span><strong>${formatComparisonValue(latestA,measure)}</strong><small>${periods[periods.length - 1]} · ${kind === 'metric' ? 'reported' : 'derived'}</small></div>
+        <div class="difference-card"><span>${tickerB} − ${tickerA}</span><strong>${formatComparisonValue(difference,measure,true)}</strong><small>Same measure definition</small></div>
+        <div class="company-value is-peer"><span>${companies[tickerB].name}</span><strong>${formatComparisonValue(latestB,measure)}</strong><small>${periods[periods.length - 1]} · ${kind === 'metric' ? 'reported' : 'derived'}</small></div>`;
+
+      const statusClass = kind === 'metric' ? '' : ' is-derived';
+      const statusLabel = kind === 'metric' ? 'reported' : 'derived';
+      const rows = periods.map((period,index) => `
+        <tr>
+          <td>${period}</td>
+          <td>${formatComparisonValue(seriesA[index],measure)}<span class="value-status${statusClass}">${statusLabel}</span></td>
+          <td>${formatComparisonValue(seriesB[index],measure)}<span class="value-status${statusClass}">${statusLabel}</span></td>
+          <td>${formatComparisonValue(seriesB[index] - seriesA[index],measure,true)}</td>
+        </tr>`).join('');
+      tableWrap.innerHTML = `
+        <table class="comparison-table">
+          <thead><tr><th>Period</th><th>${tickerA}</th><th>${tickerB}</th><th>${tickerB} − ${tickerA}</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    const companyOptions = Object.values(companies).map(item => `<option value="${item.ticker}">${item.name} (${item.ticker})</option>`).join('');
+    const comparisonCompanyA = document.getElementById('comparison-company-a');
+    const comparisonCompanyB = document.getElementById('comparison-company-b');
+    comparisonCompanyA.innerHTML = companyOptions;
+    comparisonCompanyB.innerHTML = companyOptions;
+    comparisonCompanyA.value = 'AAPL';
+    comparisonCompanyB.value = 'MSFT';
+
+    const workspaceTabs = [...document.querySelectorAll('.workspace-tab')];
+    workspaceTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        workspaceTabs.forEach(item => {
+          const selected = item === tab;
+          item.setAttribute('aria-selected',String(selected));
+          document.getElementById(item.getAttribute('aria-controls')).hidden = !selected;
+        });
+        if (tab.id === 'downloads-tab') document.querySelectorAll('.download-card').forEach(card => normalizeRange(card));
+      });
+      tab.addEventListener('keydown', event => {
+        if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const offset = event.key === 'ArrowRight' ? 1 : -1;
+        const next = workspaceTabs[(workspaceTabs.indexOf(tab) + offset + workspaceTabs.length) % workspaceTabs.length];
+        next.focus();
+        next.click();
+      });
+    });
+
+    document.querySelectorAll('.comparison-kind').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.comparison-kind').forEach(item => item.setAttribute('aria-pressed',String(item === button)));
+      renderComparisonMeasureOptions();
+    }));
+    [comparisonCompanyA,comparisonCompanyB,document.getElementById('comparison-report-kind'),document.getElementById('comparison-measure')]
+      .forEach(control => control.addEventListener('change',renderComparison));
+    renderComparisonMeasureOptions('revenue');
+    if (window.location.hash === '#comparison') document.getElementById('comparison-tab').click();
+
     document.querySelectorAll('.download-card').forEach(card => {
       card.querySelectorAll('.segment').forEach(button => button.addEventListener('click', () => {
         card.querySelectorAll('.segment').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
@@ -707,6 +1085,11 @@
       document.getElementById('quarterly-accession').textContent = company.quarterly.accession;
       document.getElementById('company-input').value = `${company.name} (${company.ticker})`;
       document.querySelectorAll('.download-card').forEach(updateCard);
+      comparisonCompanyA.value = company.ticker;
+      if (comparisonCompanyB.value === company.ticker) {
+        comparisonCompanyB.value = Object.keys(companies).find(ticker => ticker !== company.ticker);
+      }
+      renderComparison();
     });
   </script>
 </body>

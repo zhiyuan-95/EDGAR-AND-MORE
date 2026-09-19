@@ -1,0 +1,8 @@
+1. there are some companies that we can't ingest, xom, shell
+2. expand metric set to twelve, Revenue, Gross Profit, Operating Income, Net Income, Cash, Total Assets, Total Liabilities, Equity, Debt, Operating Cash Flow, CapEx, Free Cash Flow, EPS, Shares Outstanding,
+3. integrate LLM recommendation layer in the system for the miss metric recommendation
+4. generate financial indicators for analyst like P/E, ...
+5. expand annule data from 5 to the all available period. 
+6. formulize the current format of the filings, right now those files for different sections look messy, I want they to be more neat for LLM to read.
+7. right now, the way that we are keeping the data seems too storage consuming, we only ingested no more than 10 companies but it took about 1.5gb, I think it is abnormal. there must something wrong.
+8. we need a fast way to inspect/scan all of the companies in the system if there are new update for the annule or quarterly report. 
