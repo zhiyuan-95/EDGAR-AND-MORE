@@ -211,6 +211,30 @@ and persisted `report-v1` evaluations. It prints annual and quarterly evaluation
 IDs plus reported/missing counts. It does not require `SEC_USER_AGENT`, contact the
 SEC, open Arelle, call an LLM, or create TXT/JSON reports.
 
+Preview deletion of all stored evidence owned by one company:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL
+```
+
+The preview does not delete company data. It lists the matched company,
+filing/snapshot/run counts, exclusive artifact bytes, company staging/cache
+directories, and shared artifacts that will be preserved. Execute the same purge
+only after reviewing that scope:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL --execute
+uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA --execute
+```
+
+The operation deletes the selected companies as one SQLite transaction, refuses to
+run while any ingestion is active, removes company-owned `staging/<attempt-id>`
+directories, and removes immutable objects only when no unselected company still
+references them. File deletion is journaled after the database commit and can be
+retried with `sec-inline-financials-purge --cleanup-pending`. The shared SEC
+transform-plugin cache and manually generated files under `output/` are not
+company-owned and are not deleted.
+
 Generate a report from stored evidence:
 
 ```powershell

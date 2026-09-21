@@ -16,6 +16,7 @@ dependencies = [
 sec-inline-financials = "sec_inline_financials.cli:main"
 sec-inline-financials-ingest = "sec_inline_financials.company_ingestion:main"
 sec-inline-financials-map = "sec_inline_financials.mapping_cli:main"
+sec-inline-financials-purge = "sec_inline_financials.company_purge_cli:main"
 
 [dependency-groups]
 dev = [

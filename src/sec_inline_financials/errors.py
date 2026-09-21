@@ -60,3 +60,7 @@ class MissingArtifactError(ArtifactError):
 
 class ArtifactHashMismatchError(ArtifactError):
     """A retained artifact's bytes do not match its recorded hash."""
+
+
+class CompanyPurgeError(EvidenceStorageError):
+    """Company-scoped evidence could not be purged safely."""
