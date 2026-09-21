@@ -266,17 +266,19 @@ Ingestion never renders or writes TXT reports. Reports are generated only from
 stored snapshots through:
 
 ```text
-uv run --no-sync python tests/test_company_ingestion.py
+uv run --no-sync python tests/inspect_ingestion.py
 ```
 
 The script prompts for the ticker, report type, and fiscal years, then writes a TXT
-report plus a complete-facts JSON export. Both installed console scripts run
-ingestion.
+report plus a complete-facts JSON export. The two ingestion console scripts do not
+generate reports; `sec-inline-financials-map` evaluates only stored evidence.
 
-Direct Mapping, metric-result persistence, LLM evidence packets/recommendations,
-human review, API endpoints, evidence downloads, and the browser frontend remain
-planned. Ingestion does not populate those future layers and does not synchronize a
-retrieval index.
+Direct Mapping and metric-result persistence are implemented by the separate
+Milestone 2 components. After a successful active-window publication, ingestion
+evaluates or reuses mapping in a separate failure boundary; mapping failure cannot
+roll back evidence or change the ingestion status. LLM evidence
+packets/recommendations, human review, API endpoints, evidence downloads, and the
+browser frontend remain planned. Ingestion does not synchronize a retrieval index.
 
 ## 13. Verification boundary
 

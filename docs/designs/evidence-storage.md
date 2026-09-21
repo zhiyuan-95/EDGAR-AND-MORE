@@ -26,8 +26,8 @@ Reopening stored results is the acceptance criterion here.
 
 Storage ingestion never writes TXT reports. The interactive report script selects
 stored snapshots, projects their persisted evaluations, and passes the results to
-the renderer without SEC or Arelle access. Both installed console scripts run
-ingestion.
+the renderer without SEC or Arelle access. The two ingestion console scripts remain
+separate from the stored-evidence Direct Mapping command.
 
 ### Scope across the proposal's milestones
 
@@ -38,13 +38,14 @@ ingestion.
 | Dimensions, conflicts, validation, calculations | Implemented in Milestone 1 |
 | Files, paths, hashes, source versions | Implemented in Milestone 1 |
 | Required narrative filing sections | Implemented by extraction profile v2 and migration 0003 |
-| Metric results and their fact links | Define the storage boundary here; implement with Milestone 2 |
-| Recommendations, exact model packets/responses, review decisions | Define the storage boundary here; implement with Milestone 3 |
-| Company refresh and active-window publication | Implemented in Milestone 4; mapping invalidation remains later work |
-| HTTP download endpoints and frontend | Milestone 5; expose Python retrieval functions now |
+| Metric results and their fact links | Implemented in Milestone 2 by migration 0004 and the Direct Mapping modules |
+| Recommendations, exact model packets/responses, review decisions | Defined here; planned for Milestone 3 |
+| Company refresh and active-window publication | Implemented in Milestone 1; exact snapshot bindings and mapping refresh added in Milestone 2 |
+| HTTP download endpoints and frontend | Planned for Milestone 4; Python retrieval functions remain the current boundary |
 
-This is a storage design, not authorization to implement mapping rules, quarter
-derivation, a scheduler, a frontend, or a new financial-metric policy.
+This evidence-storage design does not define mapping rules, quarter derivation, a
+scheduler, a frontend, or a new financial-metric policy. Direct Mapping rules and
+persistence are implemented separately in `direct_mapping_implementation_plan.txt`.
 
 ## 2. Implemented code seams
 
@@ -57,7 +58,7 @@ The implementation uses these storage-to-report seams:
 | `evidence_classification.py::classify_report` | Applies versioned eligibility, duplicate selection, and conflict classification |
 | `storage/report_projection.py::project_stored_report` | Rebuilds annual or quarterly renderer models from one stored snapshot and evaluation |
 | `report.py` | Formats projected read models and assigns presentation-only E/D/R labels |
-| `tests/test_company_ingestion.py` | Selects fiscal years, renders stored evaluations, and exports complete fact occurrences |
+| `tests/inspect_ingestion.py` | Selects fiscal years, renders stored evaluations, and exports complete fact occurrences |
 
 The locked Arelle package is 2.41.7. Its `model.facts` contains top-level facts;
 `factsInInstance` includes nested facts and is implemented as a set. Complete
@@ -724,14 +725,15 @@ evidence schema must allow these links without rewriting old facts:
 | `review_decisions` | Append-only approval/rejection history, reviewed recommendation version, timestamp and reason |
 
 Generic artifacts already support these files, but no packet is generated and no
-recommendation is requested in Milestone 1. Mapping exclusion reasons belong to
-metric evaluations, not the report-exclusion table. A review decision or new mapping
-must never mutate the facts that originally supported it.
+recommendation is requested before Milestone 3. Direct Mapping resolution traces
+belong to metric evaluations, not the report-exclusion table. A review decision or
+new mapping must never mutate the facts that originally supported it.
 
-The initial store is not a complete mapping-candidate engine: presentation networks,
-metric precedence, and target-specific evidence selection need their own design.
-Observed-concept enumeration prevents a weak report shortlist from being mistaken
-for an exhaustive filing search.
+The Milestone 1 store alone is not a complete mapping-candidate engine. Milestone 2
+adds deterministic precedence for the seven configured targets; broader discovery,
+presentation-network retrieval, and target-specific LLM evidence selection remain
+Milestone 3 work. Observed-concept enumeration prevents a weak report shortlist from
+being mistaken for an exhaustive filing search.
 
 ## 12. Implementation work packages and status
 
@@ -942,6 +944,7 @@ snapshot.
 
 Milestone 1 is implemented and has automated plus recorded live-window evidence.
 The remaining live new-accession/performance probe is tracked as an acceptance
-boundary, not as missing storage functionality. Mapping, recommendation, and
-frontend milestones retain their own acceptance gates; request-triggered evidence
+boundary, not as missing storage functionality. Direct Mapping is implemented and
+accepted separately in `direct_mapping_implementation_plan.txt`; recommendation and
+frontend milestones retain their own acceptance gates. Request-triggered evidence
 updates are implemented separately in `ingestAndUpdate.txt`.

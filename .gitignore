@@ -9,3 +9,5 @@ config.env
 config.txt
 output/
 .gstack/
+.uv-cache/
+dist/

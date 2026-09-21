@@ -19,6 +19,8 @@ from sec_inline_financials.evidence_ingestion import (
     SecGateway,
 )
 from sec_inline_financials.evidence_models import RunOutcome, StoredCompanyState
+from sec_inline_financials.mapping_models import CompanyMappingResult
+from sec_inline_financials.mapping_service import DirectMappingService
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.sec_client import SecClient
 from sec_inline_financials.storage.config import evidence_runtime_paths
@@ -75,6 +77,8 @@ class CompanyIngestionResult:
     active_accessions: tuple[str, ...] = ()
     run: RunOutcome | None = None
     error: str | None = None
+    mapping: CompanyMappingResult | None = None
+    mapping_error: str | None = None
 
 
 class CompanyIngestionService:
@@ -132,6 +136,10 @@ class CompanyIngestionService:
         )
         if previous is not None and not should_check_sec:
             self._progress(f"Stored evidence is current for {requested}; SEC check skipped.")
+            mapping, mapping_error = self._evaluate_mapping(
+                requested,
+                require_complete_window=annual_count == 5 and quarterly_count == 12,
+            )
             return CompanyIngestionResult(
                 company=previous.company,
                 status="reused_local",
@@ -139,6 +147,8 @@ class CompanyIngestionService:
                 annual_check_due=False,
                 quarterly_check_due=False,
                 active_accessions=previous.active_accessions,
+                mapping=mapping,
+                mapping_error=mapping_error,
             )
 
         try:
@@ -238,6 +248,11 @@ class CompanyIngestionService:
             company,
             annual=annual,
             quarterly=quarterly,
+            snapshot_ids={
+                outcome.accession: outcome.snapshot_id
+                for outcome in run.filings
+                if outcome.snapshot_id is not None
+            },
             next_check_date_10k=next_annual,
             next_check_date_10q=next_quarterly,
         )
@@ -251,6 +266,10 @@ class CompanyIngestionService:
             status = "updated"
         else:
             status = "checked_no_update"
+        mapping, mapping_error = self._evaluate_mapping(
+            company.ticker,
+            require_complete_window=annual_count == 5 and quarterly_count == 12,
+        )
         self._progress(f"Completed ingestion for {company.ticker}: {status}.")
         return CompanyIngestionResult(
             company=company,
@@ -262,7 +281,30 @@ class CompanyIngestionService:
             active_accessions=current.active_accessions,
             run=run,
             error=_failure_summary(failed) if failed else None,
+            mapping=mapping,
+            mapping_error=mapping_error,
         )
+
+    def _evaluate_mapping(
+        self,
+        ticker: str,
+        *,
+        require_complete_window: bool,
+    ) -> tuple[CompanyMappingResult | None, str | None]:
+        self._progress(f"Evaluating stored Direct Mapping for {ticker}...")
+        try:
+            result = DirectMappingService(self._store).evaluate_company(
+                ticker,
+                require_complete_window=require_complete_window,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            self._progress(
+                f"Direct Mapping failed for {ticker}; stored evidence remains published."
+            )
+            return None, error
+        self._progress(f"Completed stored Direct Mapping for {ticker}.")
+        return result, None
 
 
 def ingest_company(
@@ -468,6 +510,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{filing.accession}: {filing.status}")
     if result.error:
         print(f"Warning: {result.error}")
+    if result.mapping is not None:
+        print(
+            f"Annual mapping: {result.mapping.annual.reported_count} reported, "
+            f"{result.mapping.annual.missing_count} missing"
+        )
+        print(
+            f"Quarterly mapping: {result.mapping.quarterly.reported_count} reported, "
+            f"{result.mapping.quarterly.missing_count} missing"
+        )
+    if result.mapping_error:
+        print(f"Mapping warning: {result.mapping_error}")
     return 0
 
 

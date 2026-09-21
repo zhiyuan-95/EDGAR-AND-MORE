@@ -2,7 +2,7 @@
 
 **Audience:** Project owner  
 **Application model:** Local, single-user application  
-**Status:** Current blueprint; evidence storage and on-demand refresh implemented
+**Status:** Current blueprint; evidence storage, on-demand refresh, and Direct Mapping implemented
 
 ## 1. Project objective and scope
 
@@ -104,9 +104,15 @@ The current reports guide this storage model by demonstrating selected facts, di
 
 Mapping runs separately for each company, Target Metric, and exact annual or quarterly period.
 
+<<<<<<< HEAD
 The first stage performs Direct Mapping using versioned runtime rules initially transcribed from the exact concept names in `mapping.txt`. When Direct Mapping cannot populate a metric, the backend retrieves relevant stored evidence and requests an LLM Mapping Recommendation.
 
 The recommendation is stored with its evidence and remains pending until the user approves or rejects it through the frontend. Direct Mapping precedence, missing classifications, persistence, and verification are defined in the [Direct Mapping implementation plan](direct-mapping-implementation-plan.md); later recommendation prompting, validation, and reuse rules remain a separate design.
+=======
+The implemented first stage performs Direct Mapping with frozen `direct-mapping-v1` rules that match the seven applicable entries in `mapping.txt`. It evaluates annual and quarterly windows independently, uses persisted `report-v1` selections, preserves reported zero, and stores either one exact fact link or an explicit missing result for every Target Metric and period.
+
+The separate `direct_mapping_implementation_plan.txt` defines concept precedence, missing classifications, lineage, persistence, publication, and refresh behavior. When Direct Mapping cannot populate a metric, the planned next stage retrieves relevant stored evidence and requests an LLM Mapping Recommendation. The recommendation will remain pending until the user approves or rejects it through the frontend.
+>>>>>>> master
 
 ### 3.3 Update mechanism
 
@@ -121,7 +127,7 @@ Updates occur through local application use rather than a background schedule.
 - Earlier evidence and mapping decisions remain retained for traceability.
 - Ingestion and updates do not generate TXT inspection reports.
 
-Current transaction, retry, snapshot-versioning, active-window, and fallback rules are defined in `ingestAndUpdate.txt` and `evidence-storage.md`. Mapping recommendation invalidation remains a Milestone 2/3 design concern.
+Current transaction, retry, snapshot-versioning, active-window, and fallback rules are defined in `ingestAndUpdate.txt` and `evidence-storage.md`. Direct Mapping publication and stale-result rules are defined in `direct_mapping_implementation_plan.txt`. Mapping Recommendation invalidation remains a Milestone 3 design concern.
 
 ### 3.4 Frontend
 
@@ -141,16 +147,17 @@ The frontend does not open or query SQLite directly. The backend supplies stable
 
 ## 4. Runtime workflows
 
-### 4.1 First company ingestion: implemented foundation plus planned mapping
+### 4.1 First company ingestion and Direct Mapping: implemented
 
 1. A caller submits a company ticker through the ingestion CLI or Python API.
 2. The backend initializes storage, resolves the company, and selects its filing window.
 3. Each selected filing is processed in its own Arelle session.
 4. All exposed observations, supporting evidence, retained resources, and required narrative-section records are stored per filing.
 5. The backend publishes the active five-annual/twelve-quarter window after processing and returns per-filing outcomes.
-6. In Milestone 2, Direct Mapping will run for the seven Target Metrics for every supported period.
-7. In Milestone 3, unresolved metrics will enter the LLM recommendation and human-review workflow.
-8. In Milestone 5, the frontend will display stored metric results and evidence.
+6. Direct Mapping runs after evidence publication in a separate operation and persists all seven Target Metric outcomes for every supported period.
+7. A mapping failure preserves the committed evidence window and the prior metric evaluation, reporting mapping status separately.
+8. In Milestone 3, unresolved metrics will enter the LLM recommendation and human-review workflow.
+9. In Milestone 4, the frontend will display stored metric results and evidence.
 
 This workflow does not generate a TXT inspection report.
 
@@ -161,11 +168,11 @@ This workflow does not generate a TXT inspection report.
 3. A due, forced, missing-evidence, or missing-section request refreshes SEC metadata and processes the selected filing window.
 4. Compatible snapshots are artifact-verified and reused; missing or newer-profile snapshots are extracted and stored independently.
 5. The backend publishes the active window only after the run and retains earlier snapshots and inactive filing metadata.
-6. The result reports `checked_no_update`, `updated`, or `refresh_failed_using_local_data` as applicable. Metric refresh begins after Milestone 2 is implemented.
+6. The result reports `checked_no_update`, `updated`, or `refresh_failed_using_local_data` as applicable. A successful publication evaluates or reuses Direct Mapping; a mapping error does not change the ingestion status or roll back evidence.
 
 ### 4.3 Inspection report generation
 
-1. The project owner explicitly runs `uv run --no-sync python tests/test_company_ingestion.py`.
+1. The project owner explicitly runs `uv run --no-sync python tests/inspect_ingestion.py`.
 2. The script selects stored annual or complete Q1-Q3 quarterly fiscal years and replays their persisted `report-v1` evaluations without SEC or Arelle access.
 3. The resulting TXT report and complete-facts JSON file are used for manual inspection.
 
@@ -173,31 +180,25 @@ This workflow remains separate from normal ingestion, updates, and frontend use.
 
 ## 5. Implementation sequence
 
-### Milestone 1: Durable evidence storage — implemented
+### Milestone 1: Durable evidence storage and incremental updates — implemented
 
-Structured extraction retains all observed filing facts, normalized SQLite evidence, artifact tracking, report replay, and profile-v2 narrative sections.
+Structured extraction retains all observed filing facts, normalized SQLite evidence, artifact tracking, report replay, and profile-v2 narrative sections. Company-access checks and manual refresh behavior publish active windows, retain historical evidence, and reuse stored data when no SEC check is due.
 
-This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. Repeated ingestion must be safe, failed imports must not leave partial results, and stored report replay must preserve the report behavior.
+This milestone proves that filing evidence can be stored and reloaded without losing identities, values, dimensions, conflicts, validation evidence, or calculation relationships. No-change checks reuse stored data, new filings extend evidence history, failed updates preserve the last usable result, and updates never generate inspection reports automatically.
 
-### Milestone 2: Incremental evidence updates — implemented
+### Milestone 2: Direct Mapping — implemented
 
-Company-access checks and manual refresh behavior process selected eligible filings, publish active windows, and retain historical evidence. Refreshing mapped metric results remains dependent on Milestone 2.
+Versioned period-by-period rules evaluate the seven Target Metrics from exact active snapshots and persisted `report-v1` decisions. Immutable annual and quarterly evaluations retain reported values, explicit missing reasons, rule/window identities, resolution traces, and exact fact lineage.
 
-This milestone proves that no-change checks reuse stored data, new filings extend the evidence history, failed updates preserve the last usable result, and updates never generate inspection reports automatically.
+This milestone proves that all seven metrics are evaluated for every supported period, a complete 5/12 window yields 119 results, zero remains reported, unchanged inputs are idempotent, and mapping never contacts the SEC, opens Arelle, calls an LLM, or generates reports.
 
-### Milestone 3: Direct Mapping — planned next
-
-Implement period-by-period lookup for the seven Target Metrics using `mapping.txt` and persist each metric result with links to its filing evidence.
-
-This milestone proves that all seven metrics are evaluated for every supported period and that resolved, zero, missing, and conflicting states remain distinguishable without generating reports.
-
-### Milestone 4: LLM recommendations and human review — planned
+### Milestone 3: LLM recommendations and human review — planned next
 
 Build target-specific evidence retrieval, store exact model requests and responses, and support approval or rejection of Mapping Recommendations.
 
 This milestone proves that each recommendation is reproducible, cites retained evidence, and cannot become an accepted mapping without user approval.
 
-### Milestone 5: Local frontend — planned
+### Milestone 4: Local frontend — planned
 
 Build the browser interface and local backend API over the completed storage, mapping, review, and update capabilities.
 
@@ -223,7 +224,7 @@ This blueprint does not define:
 - public hosting or multi-user operation;
 - automatic or scheduled report generation;
 - table-by-table SQLite schema and migration details;
-- detailed mapping and missing-data policies;
+- detailed LLM recommendation and review policies;
 - LLM provider selection, prompts, or packet limits;
 - API endpoint contracts or frontend screen layouts; or
 - amendment, retry, and failure-recovery rules beyond the high-level boundaries above.

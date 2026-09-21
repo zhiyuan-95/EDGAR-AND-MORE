@@ -2,8 +2,9 @@
 
 Evidence ingestion is separate from stored-evidence report generation. Ingestion
 never renders or writes a Showcase Report. Reports are generated interactively with
-`uv run --no-sync python tests/test_company_ingestion.py`; both installed console
-commands run ingestion.
+`uv run --no-sync python tests/inspect_ingestion.py`. The two ingestion console
+commands do not generate reports; the separate `sec-inline-financials-map` command
+evaluates Direct Mapping from stored evidence only.
 
 ## Runtime location
 
@@ -89,6 +90,47 @@ immutable objects.
 Retrying an accession with the same extraction profile reuses a compatible,
 artifact-verified snapshot. Reuse means local evidence was reused; it is not a
 claim that SEC bytes were checked again.
+
+## Company-scoped purge
+
+The purge command accepts one ticker, a comma-separated set, or a space-separated
+set. It defaults to a non-deleting preview (normal schema initialization may still
+apply a packaged migration):
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL
+uv run --no-sync sec-inline-financials-purge AAPL,MSFT,NVDA
+```
+
+Review the resolved company names/CIKs and counts, then explicitly execute:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL --execute
+uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA --execute
+```
+
+Execution is all-or-nothing for the requested ticker set. An unknown ticker aborts
+the whole request. The database transaction removes company, filing, run, attempt,
+snapshot, section, fact, evaluation, mapping, and link rows. It deletes global
+concept/artifact records only after they become unreferenced. Any artifact shared
+with an unselected company remains in both SQLite and `objects/sha256`.
+
+The command requires quiescent ingestion. If an abandoned run is still marked
+`running`, invoke `recover_interrupted_attempts(store)` as described above and then
+retry. The purge removes per-attempt Arelle cache and capture data under
+`staging/<attempt-id>`, but preserves the shared pinned SEC transform-plugin cache.
+It also preserves manually generated `output/` reports, because those are
+user-requested exports rather than database-attached evidence.
+
+Filesystem deletion is recorded in `pending_file_deletions` in the same SQLite
+transaction. If Windows has a file locked, the company database purge remains
+committed and the path remains queued. Close the process holding the file and run:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge --cleanup-pending
+```
+
+For an important dataset, create and audit a backup before using `--execute`.
 
 ## Backup and restore verification
 

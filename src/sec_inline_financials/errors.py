@@ -42,6 +42,14 @@ class FilingMetadataError(EvidenceStorageError):
     """A known accession was rediscovered with different immutable metadata."""
 
 
+class MappingError(ExplorerError):
+    """Direct Mapping could not produce or publish a complete evaluation."""
+
+
+class MappingInputError(MappingError):
+    """Stored evidence cannot satisfy the Direct Mapping preflight contract."""
+
+
 class ArtifactError(EvidenceStorageError):
     """A retained artifact is missing, unsafe, or fails integrity checks."""
 
@@ -52,3 +60,7 @@ class MissingArtifactError(ArtifactError):
 
 class ArtifactHashMismatchError(ArtifactError):
     """A retained artifact's bytes do not match its recorded hash."""
+
+
+class CompanyPurgeError(EvidenceStorageError):
+    """Company-scoped evidence could not be purged safely."""
