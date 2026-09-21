@@ -127,21 +127,26 @@ class ArtifactStore:
         )
 
     def resolve(self, relative_object_path: str, sha256: str, byte_size: int) -> Path:
-        relative = Path(relative_object_path)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ArtifactError(f"Unsafe artifact path: {relative_object_path}")
-        root = self.root.resolve()
-        path = (self.root / relative).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise ArtifactError(
-                f"Artifact path escapes the configured root: {relative_object_path}"
-            ) from exc
+        path = self._resolve_object_path(relative_object_path)
         if not path.is_file():
             raise MissingArtifactError(f"Retained artifact is missing: {relative_object_path}")
         self._verify_path(path, sha256, byte_size)
         return path
+
+    def remove_object(self, relative_object_path: str) -> bool:
+        """Remove one safely contained object, returning false when it is already absent."""
+        path = self._resolve_object_path(relative_object_path)
+        if not path.exists():
+            return False
+        if not path.is_file():
+            raise ArtifactError(f"Artifact object is not a regular file: {relative_object_path}")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise ArtifactError(f"Could not remove artifact {relative_object_path}: {exc}") from exc
+        with suppress(OSError):
+            path.parent.rmdir()
+        return True
 
     def cleanup_staging(self, attempt_identity: str) -> None:
         if _SAFE_SEGMENT.fullmatch(attempt_identity) is None:
@@ -156,6 +161,22 @@ class ArtifactStore:
             raise ArtifactError("Refusing to remove the staging root itself.")
         if target.exists():
             shutil.rmtree(target)
+
+    def _resolve_object_path(self, relative_object_path: str) -> Path:
+        relative = Path(relative_object_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ArtifactError(f"Unsafe artifact path: {relative_object_path}")
+        root = self.root.resolve()
+        objects_root = self.objects_root.resolve()
+        path = (self.root / relative).resolve()
+        try:
+            path.relative_to(root)
+            path.relative_to(objects_root)
+        except ValueError as exc:
+            raise ArtifactError(
+                f"Artifact path escapes the configured object store: {relative_object_path}"
+            ) from exc
+        return path
 
     @staticmethod
     def _verify_path(path: Path, expected_hash: str, expected_size: int) -> None:

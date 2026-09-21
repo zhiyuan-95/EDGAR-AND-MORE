@@ -56,10 +56,17 @@ Ingestion and update workflows do not generate reports automatically.
   schema, artifact, replay, and integrity contracts.
 - [Evidence-storage runbook](docs/evidence_storage_runbook.md): commands, runtime
   paths, audits, recovery, backup, and verification.
+<<<<<<< HEAD
+- [Interactive frontend prototype](docs/analyst_dashboard_wireframe.html) and
+  [static preview](docs/analyst_dashboard_wireframe.png): demo-only one-page,
+  single-company metric-lineage and filing-download selector; local API integration
+  remains planned.
+=======
 - [Milestone 2 Direct Mapping plan](docs/designs/direct_mapping_implementation_plan.txt):
   implemented rules, resolver, persistence, refresh, CLI, and acceptance contract.
 - [Planned frontend wireframe](docs/analyst_dashboard_wireframe.html) and
   [static preview](docs/analyst_dashboard_wireframe.png): demo-only future interface.
+>>>>>>> master
 
 ## Metric workflow
 
@@ -210,6 +217,30 @@ This command requires a complete active 5/12 window with exact snapshot bindings
 and persisted `report-v1` evaluations. It prints annual and quarterly evaluation
 IDs plus reported/missing counts. It does not require `SEC_USER_AGENT`, contact the
 SEC, open Arelle, call an LLM, or create TXT/JSON reports.
+
+Preview deletion of all stored evidence owned by one company:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL
+```
+
+The preview does not delete company data. It lists the matched company,
+filing/snapshot/run counts, exclusive artifact bytes, company staging/cache
+directories, and shared artifacts that will be preserved. Execute the same purge
+only after reviewing that scope:
+
+```powershell
+uv run --no-sync sec-inline-financials-purge AAPL --execute
+uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA --execute
+```
+
+The operation deletes the selected companies as one SQLite transaction, refuses to
+run while any ingestion is active, removes company-owned `staging/<attempt-id>`
+directories, and removes immutable objects only when no unselected company still
+references them. File deletion is journaled after the database commit and can be
+retried with `sec-inline-financials-purge --cleanup-pending`. The shared SEC
+transform-plugin cache and manually generated files under `output/` are not
+company-owned and are not deleted.
 
 Generate a report from stored evidence:
 
