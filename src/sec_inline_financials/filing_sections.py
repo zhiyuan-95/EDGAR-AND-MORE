@@ -221,7 +221,14 @@ def _candidate_record(
     blocks: tuple[_TextBlock, ...],
     source_document_key: str,
 ) -> FilingSectionRecord:
-    next_heading = headings[heading_index + 1] if heading_index + 1 < len(headings) else None
+    next_heading = next(
+        (
+            candidate
+            for candidate in headings[heading_index + 1 :]
+            if _is_section_boundary(definition, heading, candidate)
+        ),
+        None,
+    )
     end_index = next_heading.block_index if next_heading is not None else len(blocks)
     content_text = "\n\n".join(
         block.text for block in blocks[heading.block_index : end_index] if block.text
@@ -240,6 +247,19 @@ def _candidate_record(
         content_text=content_text,
         content_sha256=hashlib.sha256(content_text.encode("utf-8")).hexdigest(),
     )
+
+
+def _is_section_boundary(
+    definition: _SectionDefinition,
+    heading: _Heading,
+    candidate: _Heading,
+) -> bool:
+    if candidate.kind == "item":
+        return candidate.item != heading.item
+    if definition.part is None:
+        return False
+    current_part = heading.part or definition.part
+    return candidate.part != current_part
 
 
 def _missing_record(
