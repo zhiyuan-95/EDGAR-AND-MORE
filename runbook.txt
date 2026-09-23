@@ -7,5 +7,5 @@ uv run --no-sync sec-inline-financials COMPANY
 Inspect mapping:
 uv run python tests\inspect_direct_mapping.py
 
-inspect inline inline ingestions
+inspect inline ingestions
 uv run python tests\inspect_inline_ingestion.py
