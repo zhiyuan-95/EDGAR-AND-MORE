@@ -2,7 +2,7 @@
 
 **Audience:** Project owner  
 **Application model:** Local, single-user application  
-**Status:** Current blueprint; evidence storage, on-demand refresh, and Direct Mapping implemented
+**Status:** Current blueprint; evidence storage, on-demand refresh, and Direct Mapping implemented; recommendations and production frontend planned
 
 ## 1. Project objective and scope
 
@@ -36,6 +36,8 @@ The current application already:
 - resolves a ticker to an SEC company;
 - discovers eligible Inline XBRL 10-K and 10-Q filings;
 - loads filings with Arelle;
+- retries only transient SEC extension-taxonomy `.xsd` HTTP 503 failures from SEC
+  Archives, with three bounded backoff attempts;
 - detaches every Arelle-exposed observation, context, unit, dimension, validation message, and supported calculation relationship before the Arelle session closes;
 - retains exact filing-owned source resources, the Arelle log, and a source manifest in a SHA-256 content-addressed archive;
 - stores immutable, normalized filing snapshots and versioned report classifications in SQLite; and
@@ -45,9 +47,9 @@ The current storage profile is `evidence-v2`. It preserves facts excluded by the
 
 ### 2.2 On-demand inspection reports
 
-The annual and quarterly TXT reporting service remains implemented and separate from evidence ingestion.
+The annual and quarterly TXT reporting service and the narrative-section inspector remain implemented and separate from evidence ingestion.
 
-- Reports are generated only when the Python report API is explicitly called; there is currently no report console command.
+- Reports are generated only when an interactive Python inspector is explicitly run; there is currently no installed report console command.
 - Reports are for the project owner's inspection.
 - Company ingestion and updates do not generate reports automatically.
 - Reports under `output/` are examples of the information currently produced.
@@ -73,8 +75,9 @@ Local Python backend
         +--> retained filing and evidence files
         +--> SEC discovery and Arelle processing
 
-Explicit Python report API
-        +--> in-memory SEC/Arelle report generation --> TXT inspection report
+Explicit stored-evidence inspectors
+        +--> report-v1 projection --> TXT report + complete-facts JSON
+        +--> verified retained document --> narrative-section TXT report
 ```
 
 The browser frontend communicates with the local Python backend. The backend owns SQLite connections, filesystem access, SEC/Arelle processing, mapping operations, and downloads. This allows the frontend to use local data without coupling it directly to the database schema.
@@ -91,10 +94,11 @@ At a high level, storage covers:
 - normalized required 10-K/10-Q narrative sections linked to the retained primary document;
 - reconciliation issues and their candidate facts;
 - validation messages and calculation relationships;
-- metric results, mapping recommendations, and review decisions; and
+- current metric results and exact fact links;
+- planned mapping recommendations and review decisions; and
 - artifact metadata, paths, hashes, and versions.
 
-Original filing resources, evidence downloads, and exact LLM evidence packets remain as files. SQLite records their identities, locations, hashes, and relationships to companies, filings, periods, and mapping decisions.
+Original filing resources remain as content-addressed files. Planned evidence downloads and exact LLM evidence packets will also remain files, with SQLite recording their identities, hashes, and relationships when those milestones are implemented.
 
 Structured SEC/Arelle results are persisted before any optional report rendering. Storage preserves exact values and provenance, distinguishes zero from missing data, and records why a fact was excluded from a report or mapping result.
 
@@ -104,15 +108,19 @@ The current reports guide this storage model by demonstrating selected facts, di
 
 Mapping runs separately for each company, Target Metric, and exact annual or quarterly period.
 
-<<<<<<< HEAD
-The first stage performs Direct Mapping using versioned runtime rules initially transcribed from the exact concept names in `mapping.txt`. When Direct Mapping cannot populate a metric, the backend retrieves relevant stored evidence and requests an LLM Mapping Recommendation.
+The implemented first stage performs Direct Mapping with frozen
+`direct-mapping-v1` rules matching the seven applicable entries in
+[`docs/mapping.txt`](../mapping.txt). It evaluates annual and quarterly windows
+independently, uses persisted `report-v1` selections, preserves reported zero, and
+stores either one exact fact link or an explicit missing result for every Target
+Metric and period.
 
-The recommendation is stored with its evidence and remains pending until the user approves or rejects it through the frontend. Direct Mapping precedence, missing classifications, persistence, and verification are defined in the [Direct Mapping implementation plan](direct-mapping-implementation-plan.md); later recommendation prompting, validation, and reuse rules remain a separate design.
-=======
-The implemented first stage performs Direct Mapping with frozen `direct-mapping-v1` rules that match the seven applicable entries in `mapping.txt`. It evaluates annual and quarterly windows independently, uses persisted `report-v1` selections, preserves reported zero, and stores either one exact fact link or an explicit missing result for every Target Metric and period.
-
-The separate `direct_mapping_implementation_plan.txt` defines concept precedence, missing classifications, lineage, persistence, publication, and refresh behavior. When Direct Mapping cannot populate a metric, the planned next stage retrieves relevant stored evidence and requests an LLM Mapping Recommendation. The recommendation will remain pending until the user approves or rejects it through the frontend.
->>>>>>> master
+The [Direct Mapping design and implementation record](direct-mapping-implementation-plan.md)
+defines concept precedence, missing classifications, lineage, persistence,
+publication, and refresh behavior. When Direct Mapping cannot populate a metric,
+the planned next stage will retrieve relevant stored evidence and request an LLM
+Mapping Recommendation. Recommendations and their approval/rejection workflow are
+not implemented in the current checkout.
 
 ### 3.3 Update mechanism
 
@@ -127,7 +135,7 @@ Updates occur through local application use rather than a background schedule.
 - Earlier evidence and mapping decisions remain retained for traceability.
 - Ingestion and updates do not generate TXT inspection reports.
 
-Current transaction, retry, snapshot-versioning, active-window, and fallback rules are defined in `ingestAndUpdate.txt` and `evidence-storage.md`. Direct Mapping publication and stale-result rules are defined in `direct_mapping_implementation_plan.txt`. Mapping Recommendation invalidation remains a Milestone 3 design concern.
+Current transaction, retry, snapshot-versioning, active-window, and fallback rules are defined in `ingestAndUpdate.txt` and `evidence-storage.md`. Direct Mapping publication and stale-result rules are defined in `direct-mapping-implementation-plan.md`. Mapping Recommendation invalidation remains a Milestone 3 design concern.
 
 ### 3.4 Frontend
 
@@ -172,11 +180,21 @@ This workflow does not generate a TXT inspection report.
 
 ### 4.3 Inspection report generation
 
-1. The project owner explicitly runs `uv run --no-sync python tests/inspect_ingestion.py`.
+1. The project owner explicitly runs `uv run --no-sync python tests/inspect_inline_ingestion.py`.
 2. The script selects stored annual or complete Q1-Q3 quarterly fiscal years and replays their persisted `report-v1` evaluations without SEC or Arelle access.
 3. The resulting TXT report and complete-facts JSON file are used for manual inspection.
 
 This workflow remains separate from normal ingestion, updates, and frontend use.
+
+### 4.4 Narrative section inspection
+
+1. The project owner explicitly runs `uv run --no-sync python tests/inspect_filings.py`.
+2. The script opens SQLite in query-only mode, selects stored 10-K or 10-Q periods
+   and section types, and verifies the retained primary document.
+3. It rebuilds selected sections read-only from that artifact and writes one
+   timestamped TXT report under `output/` without changing the stored section rows.
+
+This workflow does not contact the SEC or run Arelle.
 
 ## 5. Implementation sequence
 

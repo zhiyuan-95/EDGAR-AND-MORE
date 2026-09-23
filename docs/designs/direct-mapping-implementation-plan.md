@@ -1,13 +1,13 @@
-# Direct Mapping Implementation Plan
+# Direct Mapping Design and Implementation Record
 
-- **Status:** Approved implementation plan
+- **Status:** Implemented runtime; dedicated Direct Mapping regression tests are not present in the current checkout
 - **Scope:** Backend-only Direct Mapping for the seven Target Metrics
-- **Milestone name:** Direct Mapping
-- **Current blueprint number:** Milestone 3; earlier working notes called it Milestone 2
+- **Milestone:** Milestone 2 — Direct Mapping
+- **Current implementation:** migration 0004, mapping modules, ingestion integration, and `sec-inline-financials-map`
 
 ## 1. Outcome
 
-Implement deterministic Direct Mapping over the evidence already stored in SQLite.
+The system implements deterministic Direct Mapping over evidence already stored in SQLite.
 For every active annual and quarterly filing period, the system evaluates all seven
 Target Metrics and persists either a reported fact or an explicit missing result.
 
@@ -21,7 +21,7 @@ The seven Target Metrics are:
 6. Equity
 7. Operating Cash Flow
 
-The completed milestone must:
+The implemented runtime:
 
 - evaluate the latest five active 10-K snapshots and latest twelve active 10-Q
   snapshots when a complete 5/12 window is available;
@@ -72,10 +72,9 @@ These decisions define the first Direct Mapping version.
 9. **Independent policy version.** Direct Mapping uses `direct-mapping-v1`. It can
    consume stored `report-v1` decisions, but it must not store metric decisions in
    the report evaluation tables.
-10. **Staged delivery.** Build the generic kernel with Revenue and Operating Cash
-    Flow first. Revenue proves the normal duration path. Operating Cash Flow proves
-    the quarterly-duration boundary. Then enable the remaining five metrics without
-    adding metric-specific branches.
+10. **Generic kernel.** The resolver has no metric-specific branches. Revenue uses
+    the normal duration path, Operating Cash Flow exercises the quarterly-duration
+    boundary, and the remaining metrics use the same rule-driven kernel.
 
 ## 3. Non-goals
 
@@ -96,11 +95,11 @@ rules and multi-fact results later, but those behaviors remain outside this plan
 
 ## 4. Current implementation seams
 
-Direct Mapping should build on the following existing components.
+Direct Mapping uses the following components.
 
 | Existing component | Reuse in Direct Mapping |
 |---|---|
-| `mapping.txt` | Requirements source for the seven primary and alternative concept names |
+| `docs/mapping.txt` | Human-readable requirements source for the seven primary and alternative concept names |
 | `filings.is_active` and `active_window_rank` | Identify the current five-annual/twelve-quarter filing window |
 | `evidence_snapshots` | Supply immutable filing-scoped evidence and payload identity |
 | `concepts` and `snapshot_concepts` | Resolve namespace-qualified concepts and snapshot-specific metadata |
@@ -110,12 +109,10 @@ Direct Mapping should build on the following existing components.
 | `EvidenceStore` | Own all bounded reads, transactions, foreign-key checks, and persisted mapping results |
 | `CompanyIngestionService` | Publish a new evidence window and trigger mapping refresh after storage succeeds |
 
-Two gaps must be filled before metric evaluation:
-
-1. An active filing currently has a rank but no explicit pointer to the exact
-   evidence snapshot that downstream products should use.
-2. No mapping rule model, mapping service, metric-result schema, or published metric
-   evaluation exists yet.
+Migration 0004 fills the two original gaps: `active_filing_snapshots` binds each
+published filing to an exact immutable snapshot, and the mapping tables persist and
+publish immutable metric evaluations. The rule model, resolver, service, CLI, and
+ingestion integration live in the modules listed in section 13.
 
 Do not use the rendered TXT report or complete-facts JSON export as an input. Those
 files are inspection outputs. Direct Mapping reads the normalized database.
@@ -156,18 +153,18 @@ active 10-Q filings -----> published filing/snapshot bindings
                        atomic evaluation publish
 ```
 
-The resolver must be a pure deterministic layer over detached stored records. The
+The resolver is a pure deterministic layer over detached stored records. The
 service and store own input selection, persistence, reuse, and publication.
 
 ## 6. Mapping rule model
 
 ### 6.1 Packaged runtime rules
 
-Do not parse the numbered prose format in root `mapping.txt` on every request. It is
+Runtime code does not parse the numbered prose format in `docs/mapping.txt`. It is
 not guaranteed to be present in an installed wheel and is easy to parse incorrectly.
 
-Create `src/sec_inline_financials/mapping_rules.py` containing frozen typed rule
-objects and these constants:
+`src/sec_inline_financials/mapping_rules.py` contains frozen typed rule objects and
+these constants:
 
 ```python
 DIRECT_MAPPING_RULE_VERSION = "direct-mapping-v1"
@@ -232,7 +229,8 @@ Reject the packaged rule set during initialization when:
 
 ### 7.1 Persist the selected snapshot
 
-Add an `active_filing_snapshots` table rather than guessing with `MAX(snapshot.id)`:
+Migration 0004 adds `active_filing_snapshots` rather than guessing with
+`MAX(snapshot.id)`:
 
 ```text
 active_filing_snapshots
@@ -245,13 +243,13 @@ Enforce `(snapshot_id, filing_id)` as a foreign key to
 `evidence_snapshots(id, filing_id)`. The table is a mutable pointer to current
 evidence, not a replacement for immutable snapshots.
 
-Update `EvidenceStore.publish_filing_window` so the same transaction that publishes
+`EvidenceStore.publish_filing_window` uses the same transaction that publishes
 the active filing ranks also publishes each successful or reused filing's exact
 snapshot ID. Remove bindings for filings leaving the active window. Leave an active
 filing without a binding when its current processing attempt failed; mapping
-preflight will then refuse to publish a new evaluation.
+preflight then refuses to publish a new evaluation.
 
-Migration 0004 should backfill existing active filings from their latest successful
+Migration 0004 backfills existing active filings from their latest successful
 `processing_run_filings` record with a non-null snapshot ID. If no unambiguous
 successful snapshot exists, leave the binding absent and require an evidence refresh
 before mapping.
@@ -295,11 +293,11 @@ quarterly query may use only snapshots bound to active exact-form 10-Q filings.
 
 ## 9. Fact eligibility for Direct Mapping
 
-`direct-mapping-v1` should consume `report-v1` selected-primary facts rather than
+`direct-mapping-v1` consumes `report-v1` selected-primary facts rather than
 reimplementing its period, numeric, validity, dimensional, duplicate, and conflict
 logic. Record the exact source report evaluation ID for every metric-period result.
 
-Add mapping-specific checks after the report decision:
+The resolver applies these mapping-specific checks after the report decision:
 
 - the concept matches the configured namespace family and local name;
 - the concept's period type matches the Target Metric rule;
@@ -373,8 +371,8 @@ not create more public result states.
 
 ## 11. Persistence design
 
-Create `src/sec_inline_financials/storage/sql/0004_direct_mapping.sql` with the
-following tables.
+`src/sec_inline_financials/storage/sql/0004_direct_mapping.sql` creates the following
+tables.
 
 ### 11.1 `active_filing_snapshots`
 
@@ -421,7 +419,7 @@ snapshot_payload_hash
 report_evaluation_id
 ```
 
-Add a unique key over company, report kind, definition version, mapping rule hash,
+The schema has a unique key over company, report kind, definition version, mapping rule hash,
 source report rule version, and active-window hash. Reuse an existing matching
 evaluation rather than inserting duplicate results.
 
@@ -506,7 +504,7 @@ than presenting its values as current for the new filing window.
 
 ## 13. Python modules and interfaces
 
-Create these modules:
+The implementation uses these modules:
 
 ```text
 src/sec_inline_financials/mapping_models.py
@@ -515,17 +513,18 @@ src/sec_inline_financials/direct_mapping.py
 src/sec_inline_financials/mapping_service.py
 ```
 
-Suggested interfaces:
+Current interfaces:
 
 ```python
-load_direct_mapping_rules() -> DirectMappingRuleSet
+DIRECT_MAPPING_RULES: DirectMappingRuleSet
 
 resolve_metric_window(
+    *,
     rule_set: DirectMappingRuleSet,
     report_kind: ReportKind,
     snapshots: tuple[MappingSnapshotInput, ...],
     observed_concepts: frozenset[ConceptIdentity],
-    selectable_facts: tuple[MappingFactInput, ...],
+    candidate_facts: tuple[MappingFactInput, ...],
 ) -> MetricWindowEvaluation
 
 DirectMappingService.evaluate_company(
@@ -535,14 +534,14 @@ DirectMappingService.evaluate_company(
 ) -> CompanyMappingResult
 ```
 
-Add focused `EvidenceStore` methods rather than embedding SQL in the resolver:
+`EvidenceStore` owns the focused SQL methods instead of embedding SQL in the resolver:
 
 ```text
-list_mapping_inputs(company_id, report_kind, report_rule_version)
+list_mapping_inputs(ticker, report_kind, report_rule_version)
 load_mapping_candidate_facts(input_snapshots, concept_candidates)
 find_metric_evaluation(input_hashes and rule versions)
 save_and_publish_metric_evaluation(evaluation)
-get_published_metric_evaluation(company_id, report_kind)
+get_published_metric_evaluation(ticker, report_kind)
 ```
 
 The pure resolver must not open SQLite, access the filesystem, contact the SEC, open
@@ -550,37 +549,42 @@ Arelle, or render reports.
 
 ## 14. Ingestion and refresh integration
 
-Integrate mapping only after its standalone service is verified.
+Mapping is integrated after evidence publication and remains a separate failure
+boundary.
 
-1. Extend active-window publication to store successful snapshot bindings.
-2. After a new active window commits, run Direct Mapping for annual and quarterly.
-3. On `reused_local`, run mapping only when the required published evaluation is
-   absent or its rule/version/window hash is stale.
-4. On `checked_no_update`, reuse the evaluation when the snapshot bindings and rules
-   are unchanged.
-5. On `updated`, create and publish new annual and/or quarterly evaluations for the
+1. Active-window publication stores successful snapshot bindings.
+2. After a new active window commits, ingestion runs Direct Mapping for annual and quarterly.
+3. On `reused_local`, ingestion calls the mapping service; the service reuses the
+   immutable evaluation when its rule and active-window identities match.
+4. On `checked_no_update`, the service likewise reuses the matching evaluation.
+5. On `updated`, the service creates and publishes new annual and quarterly evaluations for the
    changed window. Recomputing at most 119 cells is simpler and safer than partial
    in-place mutation.
-6. On `refresh_failed_using_local_data`, keep using the last published evidence and
-   metric evaluations.
+6. On `refresh_failed_using_local_data`, ingestion leaves the last published evidence
+   and metric-evaluation pointers unchanged; it does not start a new mapping run.
 7. If mapping fails after evidence publication, preserve the new evidence window,
    retain the previous published metric evaluation as stale, and surface a separate
    mapping error. Do not present the stale values as current and do not change the
    meaning of existing ingestion statuses.
 
-Add mapping progress to stderr. Keep existing ingestion summary lines stable for
-callers that consume stdout.
+Mapping progress is written to stderr. Existing ingestion summary lines remain on
+stdout.
 
-For direct manual verification, add a stored-evidence-only command:
+For direct manual verification, use the stored-evidence-only command:
 
 ```powershell
 uv run --no-sync sec-inline-financials-map AAPL
 ```
 
-The command should print annual and quarterly evaluation IDs plus reported/missing
-counts. It must not contact the SEC, invoke Arelle, or generate a report.
+The command prints annual and quarterly evaluation IDs plus reported/missing counts.
+It does not contact the SEC, invoke Arelle, or generate a report.
 
-## 15. Implementation work packages
+## 15. Historical implementation work packages
+
+The packages below preserve the approved delivery sequence. Their source modules
+exist, but the dedicated mapping test files named in this historical plan were later
+removed from the checkout. Treat their test lists as required regression coverage,
+not as a description of the active suite.
 
 ### P0. Freeze contracts with tests
 
@@ -615,7 +619,7 @@ Work:
 
 - Implement frozen rule dataclasses, validation, namespace-family matching,
   canonical serialization, and hashing.
-- Transcribe only the seven Target Metric rules from `mapping.txt`.
+- Transcribe only the seven Target Metric rules from `docs/mapping.txt`.
 
 Exit:
 
@@ -753,7 +757,11 @@ Exit:
 - Current docs match implemented behavior and do not imply LLM, frontend, Q4, or YTD
   derivation support.
 
-## 16. Test matrix
+## 16. Required Direct Mapping test matrix
+
+This matrix remains the intended contract. The current `tests/` directory does not
+contain the dedicated rule, resolver, storage, service, or integration test modules
+listed in section 15, so `pytest -q` does not currently re-prove these cases.
 
 ### Rule tests
 
@@ -823,7 +831,7 @@ partial mutable updates. The performance goal is bounded work, not clever cachin
 
 ## 18. Verification commands
 
-Run after each work package as appropriate:
+Run the current repository checks:
 
 ```powershell
 uv run --no-sync pytest -q
@@ -832,7 +840,7 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-Run the stored-evidence acceptance after the command exists:
+Run the stored-evidence acceptance against an explicitly selected local store:
 
 ```powershell
 uv run --no-sync sec-inline-financials-map AAPL
@@ -842,9 +850,9 @@ The acceptance record must state whether it used an existing local 5/12 window o
 synthetic fixture. An offline stored-evidence run is not proof that SEC access or a
 new-accession refresh occurred.
 
-## 19. Definition of done
+## 19. Implementation status and acceptance boundary
 
-Direct Mapping is complete when all of the following are true:
+The runtime implements the following design conditions:
 
 - the runtime rule set contains exactly the seven Target Metrics and has a stable
   version and hash;
@@ -862,10 +870,14 @@ Direct Mapping is complete when all of the following are true:
   stored evidence;
 - no mapping path contacts the SEC, invokes Arelle, calls an LLM, or generates a
   report;
-- unit, storage, service, integration, lint, formatting, and strict type checks pass;
-  and
-- the stored-evidence-only AAPL acceptance result, if run, is reported with its exact
+- the stored-evidence-only acceptance result, when run, is reported with its exact
   scope and limitations.
+
+The current verification gap is automated regression coverage. The active suite
+does not contain the dedicated mapping tests described in sections 15 and 16.
+Historical stored-evidence acceptance supports the implementation record, while the
+interactive `tests/inspect_direct_mapping.py` remains a manual read-only inspector;
+neither substitutes for restoring those focused tests.
 
 ## 20. Recommended commit sequence
 

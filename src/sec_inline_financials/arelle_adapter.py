@@ -15,6 +15,8 @@ from sec_inline_financials.evidence_models import ExtractionProfile, FilingEvide
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.sec_transform_plugin import ensure_sec_transform_plugin
 
+_SEC_TAXONOMY_RETRY_PLUGIN = Path(__file__).with_name("arelle_sec_retry_plugin.py")
+
 
 class ArelleProcessor:
     """Load one Inline XBRL filing and detach its complete evidence from Arelle."""
@@ -44,7 +46,7 @@ class ArelleProcessor:
             validate=True,
             calcs="c10d",
             validateDuplicateFacts="all",
-            plugins=str(sec_transform_plugin),
+            plugins="|".join((str(sec_transform_plugin), str(_SEC_TAXONOMY_RETRY_PLUGIN))),
             logFile="logToBuffer",
             logLevel="WARNING",
             logTextMaxLength=10_000,

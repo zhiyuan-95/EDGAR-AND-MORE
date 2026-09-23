@@ -1,11 +1,16 @@
-database location:
+#### Database location:
 C:\Users\johnk\SECInlineFinancials\data
 
-company ingestion
+#### Company ingestion
 uv run --no-sync sec-inline-financials COMPANY
 
-Inspect mapping:
+#### Inspect mapping:
 uv run python tests\inspect_direct_mapping.py
 
-inspect inline ingestions
+#### Inspect inline ingestions
 uv run python tests\inspect_inline_ingestion.py
+
+#### Delete companies
+uv run --no-sync sec-inline-financials-purge msft aapl --execute
+
+https://data.sec.gov/api/xbrl/companyfacts/CIK0001222333.json

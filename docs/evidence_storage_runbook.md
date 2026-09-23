@@ -2,9 +2,11 @@
 
 Evidence ingestion is separate from stored-evidence report generation. Ingestion
 never renders or writes a Showcase Report. Reports are generated interactively with
-`uv run --no-sync python tests/inspect_ingestion.py`. The two ingestion console
-commands do not generate reports; the separate `sec-inline-financials-map` command
-evaluates Direct Mapping from stored evidence only.
+`uv run --no-sync python tests/inspect_inline_ingestion.py`. Narrative sections are
+inspected separately with `uv run --no-sync python tests/inspect_filings.py`. The two
+ingestion console commands do not generate reports; the separate
+`sec-inline-financials-map` command evaluates Direct Mapping from stored evidence
+only.
 
 ## Runtime location
 
@@ -15,6 +17,8 @@ By default, runtime data is stored under:
   evidence.sqlite3
   objects/sha256/<first-two-hash-characters>/<full-sha256>
   staging/<attempt-id>/
+  cache/arelle/
+  cache/sec-transform-<pinned-commit-prefix>/
 ```
 
 Set `SEC_INLINE_FINANCIALS_DATA_DIR` to use another root. The Python path resolver
@@ -65,6 +69,31 @@ profile stores new `evidence-v2` snapshots with `filing_sections`.
 When processing occurs, `result.run` contains a run ID and one stored, reused, or
 failed outcome per filing. Each filing commits independently. A failed filing cannot
 expose a partial snapshot, and earlier completed filings remain usable.
+
+Arelle uses the pinned SEC transformation plugin plus a local retry plugin. The
+retry is limited to HTTP 503 responses for HTTPS filing extension-taxonomy `.xsd`
+resources below `sec.gov/Archives/edgar/data/` or
+`www.sec.gov/Archives/edgar/data/`, with delays of 1, 2, and 4 seconds. Permanent
+errors, filing documents, and non-SEC hosts are not retried by this layer.
+
+## Stored-evidence inspectors
+
+Generate an annual or quarterly report plus a complete-facts JSON export:
+
+```powershell
+uv run --no-sync python tests/inspect_inline_ingestion.py
+```
+
+Inspect selected narrative sections across stored 10-K or 10-Q periods:
+
+```powershell
+uv run --no-sync python tests/inspect_filings.py
+```
+
+Both workflows are interactive and write user-requested artifacts under `output/`.
+Neither contacts the SEC nor runs Arelle. The narrative inspector opens SQLite in
+query-only mode, verifies the retained primary-document artifact, and rebuilds the
+selected section text without modifying stored rows.
 
 ## Retrieval and integrity
 
@@ -219,11 +248,12 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-The opt-in pytest live test exercises complete detached evidence extraction, not
-database persistence or stored report replay. Recorded production CLI runs have
+The active automated suite covers narrative-section extraction/replay, lossless
+text-payload compaction and purge cleanup, and the scoped SEC taxonomy retry. This
+checkout does not contain an opt-in live pytest. Recorded production CLI runs have
 verified complete 5/12 evidence-v2 windows, narrative-section persistence, and
-artifact audits. A live update that discovers a genuinely new accession remains a
-separate acceptance case. For every live acceptance, record accessions, extraction
+artifact audits, but a live update that discovers a genuinely new accession remains
+a separate acceptance case. For every live acceptance, record accessions, extraction
 profiles, counts, hashes, elapsed time, database size, artifact size, largest text
 fact, and peak memory without recording `SEC_USER_AGENT` or other
 contact/configuration values.

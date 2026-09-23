@@ -17,6 +17,7 @@ metrics and a local frontend with evidence downloads and mapping review.
 | --- | --- |
 | SEC discovery and complete Arelle evidence extraction | Implemented |
 | Stored-evidence annual/quarterly TXT and complete-facts JSON reports | Implemented; interactive script |
+| Stored narrative-section inspection from retained filing artifacts | Implemented; interactive script |
 | Durable filing-resource archive and relational evidence storage | Implemented; live 5/12 windows verified |
 | Versioned Direct Mapping for seven metrics | Implemented; stored AAPL 5/12 acceptance verified |
 | Broader concept discovery, LLM packets, and recommendation checks | Planned |
@@ -24,7 +25,7 @@ metrics and a local frontend with evidence downloads and mapping review.
 | Frontend and evidence downloads | Planned |
 
 Reports are generated only from stored snapshots and their persisted `report-v1`
-evaluations. The interactive script in `tests/inspect_ingestion.py` does not
+evaluations. The interactive script in `tests/inspect_inline_ingestion.py` does not
 contact the SEC or open Arelle. The two ingestion commands also evaluate or reuse
 Direct Mapping after evidence publication; `sec-inline-financials` adds elapsed
 time and the resolved storage paths. `sec-inline-financials-map` runs only the
@@ -56,32 +57,30 @@ Ingestion and update workflows do not generate reports automatically.
   schema, artifact, replay, and integrity contracts.
 - [Evidence-storage runbook](docs/evidence_storage_runbook.md): commands, runtime
   paths, audits, recovery, backup, and verification.
-<<<<<<< HEAD
+- [Direct Mapping design and implementation record](docs/designs/direct-mapping-implementation-plan.md):
+  rules, resolver, persistence, refresh integration, CLI, and current verification
+  boundary.
 - [Interactive frontend prototype](docs/analyst_dashboard_wireframe.html) and
   [static preview](docs/analyst_dashboard_wireframe.png): demo-only one-page,
   single-company metric-lineage and filing-download selector; local API integration
   remains planned.
-=======
-- [Milestone 2 Direct Mapping plan](docs/designs/direct_mapping_implementation_plan.txt):
-  implemented rules, resolver, persistence, refresh, CLI, and acceptance contract.
-- [Planned frontend wireframe](docs/analyst_dashboard_wireframe.html) and
-  [static preview](docs/analyst_dashboard_wireframe.png): demo-only future interface.
->>>>>>> master
 
 ## Metric workflow
 
 ```text
-SEC filings -> Arelle extraction -> retained filings and linked evidence
-    -> direct mapping for each metric and exact period
-    -> broader candidate discovery and LLM recommendation when unresolved
-    -> deterministic checks and stored mapping decisions
-    -> refresh affected results -> frontend inspection and downloads
+Implemented:
+SEC filings -> Arelle extraction -> retained files + SQLite evidence
+    -> report-v1 classification -> Direct Mapping -> published metric evaluations
+
+Planned:
+unresolved metric -> target-specific evidence packet -> LLM recommendation
+    -> deterministic checks + human review -> local frontend and downloads
 ```
 
 The project covers **seven metrics**: Revenue, Operating Income, Net Income,
 Total Assets, Total Liabilities, Equity, and Operating Cash Flow.
 
-[mapping.txt](mapping.txt) remains the readable source list and parity benchmark.
+[mapping.txt](docs/mapping.txt) remains the readable source list and parity benchmark.
 Runtime code uses the frozen `direct-mapping-v1` rules and the
 `target-metrics-v1` definitions. Mapping is evaluated separately for each company,
 report kind, Target Metric, and exact period.
@@ -92,11 +91,13 @@ report kind, Target Metric, and exact period.
   `mapping_not_found` or `no_selectable_fact_for_period`.
 - Keep prior published evaluations when new evidence is incomplete or mapping fails;
   readers expose the prior evaluation as stale when its window no longer matches.
-- When Direct Mapping cannot populate a metric, retrieve target-specific stored
-  evidence and request an LLM Mapping Recommendation.
-- Keep dimensional-only, conflict, unsupported-period, insufficient-evidence,
-  and pending-review states visible.
-- A Mapping Recommendation requires user approval before it becomes accepted.
+- The planned recommendation layer will retrieve target-specific stored evidence
+  when Direct Mapping cannot populate a metric.
+- Dimensional-only, conflict, and unsupported-period details already remain in the
+  stored resolution trace. Recommendation and pending-review states are not yet
+  implemented.
+- The planned review workflow will require user approval before a recommendation can
+  become an accepted mapping.
 
 ## Storage and evidence retention
 
@@ -112,16 +113,17 @@ records. Store the required 10-K/10-Q narrative items in `filing_sections`, link
 to the retained primary source document. Persist structured extraction before TXT
 rendering, using permanent IDs separate from report-local E/D/R references.
 
-Build packets by company, metric, exact period, selected accession, and extraction
-version. Include relevant facts, dimensions, conflicts, complete grouped
-calculation relationships, checks, and retrieval-coverage information. A declared
-calculation relationship does not by itself prove that the values reconcile.
+The planned recommendation layer will build packets by company, metric, exact
+period, selected accession, and extraction version. Its design must retain relevant
+facts, dimensions, conflicts, grouped calculation relationships, checks, and
+retrieval-coverage information. A declared calculation relationship does not by
+itself prove that the values reconcile.
 
-Keep the **exact packet bytes sent to the model**, with a hash, versions, linked
-responses, and acceptance decision. Evidence stays available after ingestion,
-prompting, and refresh so the frontend can provide reproducible downloads. A TXT
-report is retained when the project owner explicitly generates one; report
-generation is separate from ingestion and updates.
+Exact model packet bytes, model responses, and acceptance decisions are planned,
+not current storage tables. Existing evidence remains available across ingestion
+and refresh so that later packets and downloads can be reproducible. A TXT report
+is retained only when the project owner explicitly generates one; report generation
+is separate from ingestion and updates.
 
 Evidence extraction occurs before the existing report filters. The store keeps
 the complete observed-concept catalog, all Arelle-exposed fact occurrences,
@@ -269,7 +271,7 @@ company-owned and are not deleted.
 Generate a report from stored evidence:
 
 ```powershell
-uv run --no-sync python tests/inspect_ingestion.py
+uv run --no-sync python tests/inspect_inline_ingestion.py
 ```
 
 The script prompts for a ticker, an annual or quarterly report, and one or more
@@ -285,6 +287,17 @@ output/<TICKER>_<annual|quarterly>_<YEARS>_all_facts.json
 Report generation reads SQLite only. It uses the newest stored snapshot for each
 selected annual year or quarter and fails explicitly when the required `report-v1`
 evaluation is absent.
+
+Inspect selected 10-K or 10-Q narrative sections across stored periods:
+
+```powershell
+uv run --no-sync python tests/inspect_filings.py
+```
+
+This inspector opens SQLite read-only, verifies the retained primary-document
+artifact, rebuilds the requested sections without changing stored rows, and writes
+one timestamped TXT report under `output/`. It does not contact the SEC or run
+Arelle.
 
 ## Meaning of an ingestion request
 
@@ -342,11 +355,10 @@ Ingestion validates XBRL and calculation relationships with Arelle. It does not
 claim to run the SEC's complete EDGAR Filer Manual validation suite.
 
 These filters also limit Direct Mapping coverage. Six- or nine-month cash-flow
-facts cannot fill discrete-quarter Operating Cash Flow or CapEx cells, and
-cover-page shares dated after the report date cannot fill period-end shares.
-The expanded store will preserve those observations with their actual dates and
-exclusion reasons. YTD subtraction and Q4 derivation remain deferred; not every
-metric is guaranteed to have a value in every period.
+facts cannot fill discrete-quarter Operating Cash Flow cells. The evidence store
+still preserves those observations with their actual dates and exclusion reasons.
+YTD subtraction and Q4 derivation remain deferred; not every Target Metric is
+guaranteed to have a value in every period.
 
 ## SEC Inline transformation plugin
 
@@ -354,7 +366,15 @@ The application obtains the SEC's custom Inline transformations separately. On
 first use, it downloads only the official SEC `transform` plugin
 files from a pinned commit in
 [Arelle/EDGAR](https://github.com/Arelle/EDGAR), verifies their SHA-256 hashes,
-and stores them under `.cache/`. A checksum mismatch stops processing.
+and stores them under the runtime root's `cache/sec-transform-<commit-prefix>/`
+directory. A checksum mismatch stops processing. Arelle's own per-attempt download
+cache uses `cache/arelle/` as its base.
+
+The Arelle session also loads a local retry plugin for one narrow transient failure:
+an HTTP 503 while fetching an HTTPS `.xsd` filing extension taxonomy below
+`sec.gov/Archives/edgar/data/` or `www.sec.gov/Archives/edgar/data/`. It makes up
+to three additional attempts after 1, 2, and 4 seconds. Other hosts, resources,
+and status codes are not retried.
 
 ## Verification
 
@@ -367,19 +387,11 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-Opt-in live test of one Apple annual filing, requiring `SEC_USER_AGENT` in the
-current process environment:
-
-```powershell
-$env:SEC10K_RUN_LIVE = "1"
-uv run --no-sync pytest tests/test_live_arelle.py -q
-```
-
-The live pytest covers complete evidence extraction into a detached bundle; it does
-not persist that bundle or exercise stored report replay. Storage tests use
-deterministic local fixtures. Separate production CLI runs have verified complete
-5/12 evidence-v2 windows, narrative sections, and artifact integrity. Those recorded
-runs do not replace the opt-in live test and do not prove every future new-accession
+The active automated suite covers narrative-section parsing and read-only replay,
+lossless text-payload compaction and purge cleanup, plus the scoped SEC taxonomy
+retry. This checkout does not currently contain an opt-in live pytest. Historical
+production CLI runs recorded complete 5/12 evidence-v2 windows, narrative sections,
+and artifact integrity, but those records do not prove a future new-accession
 refresh or the SEC's full EFM validation suite.
 
 ## Next implementation step
