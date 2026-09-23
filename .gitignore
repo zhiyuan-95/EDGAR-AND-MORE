@@ -11,3 +11,4 @@ output/
 .gstack/
 .uv-cache/
 dist/
+runbook.txt

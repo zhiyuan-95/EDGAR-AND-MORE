@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import time
+import zlib
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from sec_inline_financials.errors import (
+    EvidenceStorageError,
     FilingMetadataError,
     MappingInputError,
     SnapshotMismatchError,
@@ -68,6 +71,22 @@ from sec_inline_financials.storage.fingerprints import (
 from sec_inline_financials.storage.migrations import initialize_database
 
 _PROCESS_START_IDENTITY = f"{os.getpid()}:{time.time_ns()}"
+_TEXT_PAYLOAD_THRESHOLD_BYTES = 1024
+_RAW_PAYLOAD_COLUMNS = (
+    "tp.text_encoding AS raw_payload_text_encoding, "
+    "tp.compression_codec AS raw_payload_compression_codec, "
+    "tp.original_byte_size AS raw_payload_original_byte_size, "
+    "tp.compressed_byte_size AS raw_payload_compressed_byte_size, "
+    "tp.compressed_bytes AS raw_payload_compressed_bytes"
+)
+_RAW_PAYLOAD_INTERNAL_COLUMNS = (
+    "raw_value_payload_sha256",
+    "raw_payload_text_encoding",
+    "raw_payload_compression_codec",
+    "raw_payload_original_byte_size",
+    "raw_payload_compressed_byte_size",
+    "raw_payload_compressed_bytes",
+)
 
 
 def _now() -> str:
@@ -80,6 +99,126 @@ def _optional_date(value: object) -> date | None:
 
 def _bool(value: object) -> bool | None:
     return None if value is None else bool(value)
+
+
+def _stored_typed_value_text(observation: ObservationRecord) -> str | None:
+    if (
+        observation.typed_value_kind == "string"
+        and observation.typed_value_text == observation.raw_value_text
+    ):
+        return None
+    return observation.typed_value_text
+
+
+def _stored_raw_value_text(
+    connection: sqlite3.Connection, observation: ObservationRecord
+) -> tuple[str | None, str | None]:
+    value = observation.raw_value_text
+    if (
+        value is None
+        or observation.is_numeric is not False
+        or observation.typed_value_kind != "string"
+    ):
+        return value, None
+    raw_bytes = value.encode("utf-8")
+    if len(raw_bytes) < _TEXT_PAYLOAD_THRESHOLD_BYTES:
+        return value, None
+    compressed_bytes = zlib.compress(raw_bytes, level=6)
+    if len(compressed_bytes) >= len(raw_bytes):
+        return value, None
+    payload_hash = hashlib.sha256(raw_bytes).hexdigest()
+    connection.execute(
+        "INSERT OR IGNORE INTO text_payloads("
+        "sha256, text_encoding, compression_codec, original_byte_size, "
+        "compressed_byte_size, compressed_bytes, created_at"
+        ") VALUES (?, 'utf-8', 'zlib', ?, ?, ?, ?)",
+        (payload_hash, len(raw_bytes), len(compressed_bytes), compressed_bytes, _now()),
+    )
+    stored = connection.execute(
+        "SELECT text_encoding, compression_codec, original_byte_size, "
+        "compressed_byte_size, compressed_bytes FROM text_payloads WHERE sha256 = ?",
+        (payload_hash,),
+    ).fetchone()
+    if stored is None:
+        raise EvidenceStorageError(f"Text payload {payload_hash} was not stored.")
+    _verified_text_payload(
+        payload_hash,
+        str(stored["text_encoding"]),
+        str(stored["compression_codec"]),
+        int(stored["original_byte_size"]),
+        int(stored["compressed_byte_size"]),
+        bytes(stored["compressed_bytes"]),
+    )
+    return None, payload_hash
+
+
+def _verified_text_payload(
+    payload_hash: str,
+    encoding: str,
+    codec: str,
+    original_byte_size: int,
+    compressed_byte_size: int,
+    compressed_bytes: bytes,
+) -> str:
+    if encoding != "utf-8" or codec != "zlib":
+        raise EvidenceStorageError(
+            f"Unsupported text payload encoding for {payload_hash}: {encoding}/{codec}."
+        )
+    if len(compressed_bytes) != compressed_byte_size:
+        raise EvidenceStorageError(f"Compressed text payload size mismatch for {payload_hash}.")
+    try:
+        raw_bytes = zlib.decompress(compressed_bytes)
+    except zlib.error as exc:
+        raise EvidenceStorageError(f"Could not decompress text payload {payload_hash}.") from exc
+    if len(raw_bytes) != original_byte_size:
+        raise EvidenceStorageError(f"Original text payload size mismatch for {payload_hash}.")
+    if hashlib.sha256(raw_bytes).hexdigest() != payload_hash:
+        raise EvidenceStorageError(f"Text payload hash mismatch for {payload_hash}.")
+    try:
+        return raw_bytes.decode(encoding)
+    except UnicodeDecodeError as exc:
+        raise EvidenceStorageError(f"Text payload {payload_hash} is not valid UTF-8.") from exc
+
+
+def _decode_text_payload(row: sqlite3.Row) -> str:
+    return _verified_text_payload(
+        str(row["raw_value_payload_sha256"]),
+        str(row["raw_payload_text_encoding"]),
+        str(row["raw_payload_compression_codec"]),
+        int(row["raw_payload_original_byte_size"]),
+        int(row["raw_payload_compressed_byte_size"]),
+        bytes(row["raw_payload_compressed_bytes"]),
+    )
+
+
+def _loaded_raw_value_text(row: sqlite3.Row) -> str | None:
+    if row["raw_value_text"] is not None:
+        return str(row["raw_value_text"])
+    if row["raw_value_payload_sha256"] is None:
+        return None
+    return _decode_text_payload(row)
+
+
+def _loaded_typed_value_text(row: sqlite3.Row, raw_value_text: str | None = None) -> str | None:
+    if row["typed_value_text"] is not None:
+        return str(row["typed_value_text"])
+    if row["typed_value_kind"] == "string":
+        return raw_value_text if raw_value_text is not None else _loaded_raw_value_text(row)
+    return None
+
+
+def _loaded_fact_dict(
+    row: sqlite3.Row, *, include_typed_value_kind: bool = True
+) -> dict[str, object]:
+    result = dict(row)
+    raw_value_text = _loaded_raw_value_text(row)
+    result["raw_value_text"] = raw_value_text
+    result["typed_value_text"] = _loaded_typed_value_text(row, raw_value_text)
+    for column in _RAW_PAYLOAD_INTERNAL_COLUMNS:
+        result.pop(column, None)
+    if not include_typed_value_kind:
+        result.pop("typed_value_kind", None)
+    return result
 
 
 class EvidenceStore:
@@ -342,7 +481,9 @@ class EvidenceStore:
         ]
         parameters.extend(local_names)
         sql = (
-            "SELECT f.id AS fact_id, f.snapshot_id, f.typed_value_text, "
+            "SELECT f.id AS fact_id, f.snapshot_id, "
+            "f.raw_value_text, f.raw_value_payload_sha256, f.typed_value_kind, "
+            f"f.typed_value_text, {_RAW_PAYLOAD_COLUMNS}, "
             "c.namespace_uri, c.local_name, sc.display_qname, sc.period_type, "
             "ctx.period_kind, ctx.entity_identifier, ctx.period_start_date, "
             "ctx.period_end_date, frs.evidence_role, fer.reason_order, "
@@ -360,6 +501,7 @@ class EvidenceStore:
             "AND sc.concept_id = f.concept_id "
             "LEFT JOIN contexts AS ctx ON ctx.snapshot_id = f.snapshot_id "
             "AND ctx.id = f.context_id "
+            "LEFT JOIN text_payloads AS tp ON tp.sha256 = f.raw_value_payload_sha256 "
             "JOIN fact_report_status AS frs ON frs.snapshot_id = f.snapshot_id "
             "AND frs.fact_id = f.id "
             "JOIN report_evaluations AS re ON re.snapshot_id = f.snapshot_id "
@@ -402,6 +544,7 @@ class EvidenceStore:
             row = record["row"]
             if not isinstance(row, sqlite3.Row):
                 raise RuntimeError("Unexpected mapping query result.")
+            raw_value_text = _loaded_raw_value_text(row)
             result.append(
                 MappingFactInput(
                     snapshot_id=int(row["snapshot_id"]),
@@ -428,11 +571,7 @@ class EvidenceStore:
                     unit_family=(
                         str(row["unit_family"]) if row["unit_family"] is not None else None
                     ),
-                    typed_value_text=(
-                        str(row["typed_value_text"])
-                        if row["typed_value_text"] is not None
-                        else None
-                    ),
+                    typed_value_text=_loaded_typed_value_text(row, raw_value_text),
                     evidence_role=str(row["evidence_role"]),  # type: ignore[arg-type]
                     exclusion_reasons=tuple(record["exclusion_reasons"]),  # type: ignore[arg-type]
                     conflict_reason_codes=tuple(record["conflict_reason_codes"]),  # type: ignore[arg-type]
@@ -679,14 +818,16 @@ class EvidenceStore:
             if exists is None:
                 raise KeyError(f"Unknown Direct Mapping evaluation {evaluation_id}.")
             return tuple(
-                dict(row)
+                _loaded_fact_dict(row, include_typed_value_kind=False)
                 for row in connection.execute(
                     "SELECT mr.id AS metric_result_id, tm.metric_key, tm.display_name, "
                     "mr.snapshot_id, mr.report_evaluation_id, mr.status, mr.missing_reason, "
                     "mr.selected_candidate_rank, mr.resolution_trace_json, "
                     "mrf.fact_id, f.accession, f.form, f.report_date, "
                     "fact.display_qname, c.namespace_uri, c.local_name, "
-                    "fact.raw_value_text, fact.typed_value_text, fact.decimals, "
+                    "fact.raw_value_text, fact.raw_value_payload_sha256, "
+                    "fact.typed_value_kind, fact.typed_value_text, fact.decimals, "
+                    f"{_RAW_PAYLOAD_COLUMNS}, "
                     "fact.source_locator, ctx.period_kind, ctx.period_start_date, "
                     "ctx.period_end_date, ctx.entity_identifier, u.legacy_report_unit_text "
                     "FROM metric_results AS mr "
@@ -698,6 +839,8 @@ class EvidenceStore:
                     "LEFT JOIN concepts AS c ON c.id = fact.concept_id "
                     "LEFT JOIN contexts AS ctx ON ctx.id = fact.context_id "
                     "LEFT JOIN units AS u ON u.id = fact.unit_id "
+                    "LEFT JOIN text_payloads AS tp "
+                    "ON tp.sha256 = fact.raw_value_payload_sha256 "
                     "WHERE mr.evaluation_id = ? "
                     "ORDER BY tm.id, f.report_date, mr.snapshot_id",
                     (evaluation_id,),
@@ -1178,32 +1321,42 @@ class EvidenceStore:
         parameters.append(limit + 1)
         sql = (
             "SELECT f.id, f.observation_key, f.source_order, f.display_qname, "
-            "f.raw_value_text, f.typed_value_text, f.is_nil, f.is_numeric, "
+            "f.raw_value_text, f.raw_value_payload_sha256, f.typed_value_kind, "
+            "f.typed_value_text, f.is_nil, f.is_numeric, "
             "f.validity_name, ctx.period_start_date, ctx.period_end_date, "
-            "u.legacy_report_unit_text, c.namespace_uri, c.local_name "
+            f"u.legacy_report_unit_text, c.namespace_uri, c.local_name, {_RAW_PAYLOAD_COLUMNS} "
             "FROM facts AS f LEFT JOIN concepts AS c ON c.id = f.concept_id "
             "LEFT JOIN contexts AS ctx ON ctx.id = f.context_id "
-            "LEFT JOIN units AS u ON u.id = f.unit_id"
+            "LEFT JOIN units AS u ON u.id = f.unit_id "
+            "LEFT JOIN text_payloads AS tp ON tp.sha256 = f.raw_value_payload_sha256"
             f"{role_join} WHERE {' AND '.join(clauses)} ORDER BY f.id LIMIT ?"
         )
         with self.database.connection() as connection:
             rows = connection.execute(sql, parameters).fetchall()
-            return self._page(rows, limit)
+            visible = rows[:limit]
+            return Page(
+                items=tuple(
+                    _loaded_fact_dict(row, include_typed_value_kind=False) for row in visible
+                ),
+                next_cursor=(int(visible[-1]["id"]) if len(rows) > limit and visible else None),
+            )
 
     def get_fact(self, fact_id: int) -> dict[str, object]:
         with self.database.connection() as connection:
             row = connection.execute(
                 "SELECT f.*, c.namespace_uri, c.local_name, ctx.context_key, "
                 "ctx.period_kind, ctx.period_start_date, ctx.period_end_date, "
-                "u.unit_key, u.legacy_report_unit_text "
+                f"u.unit_key, u.legacy_report_unit_text, {_RAW_PAYLOAD_COLUMNS} "
                 "FROM facts AS f LEFT JOIN concepts AS c ON c.id = f.concept_id "
                 "LEFT JOIN contexts AS ctx ON ctx.id = f.context_id "
-                "LEFT JOIN units AS u ON u.id = f.unit_id WHERE f.id = ?",
+                "LEFT JOIN units AS u ON u.id = f.unit_id "
+                "LEFT JOIN text_payloads AS tp ON tp.sha256 = f.raw_value_payload_sha256 "
+                "WHERE f.id = ?",
                 (fact_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"Unknown fact {fact_id}.")
-            result = dict(row)
+            result = _loaded_fact_dict(row)
             result["dimensions"] = tuple(
                 dict(item)
                 for item in connection.execute(
@@ -1224,10 +1377,13 @@ class EvidenceStore:
                 raise KeyError(f"Unknown reconciliation issue {issue_id}.")
             result = dict(issue)
             result["candidates"] = tuple(
-                dict(row)
+                _loaded_fact_dict(row)
                 for row in connection.execute(
-                    "SELECT rif.candidate_order, f.* FROM reconciliation_issue_facts AS rif "
-                    "JOIN facts AS f ON f.id = rif.fact_id WHERE rif.issue_id = ? "
+                    f"SELECT rif.candidate_order, f.*, {_RAW_PAYLOAD_COLUMNS} "
+                    "FROM reconciliation_issue_facts AS rif "
+                    "JOIN facts AS f ON f.id = rif.fact_id "
+                    "LEFT JOIN text_payloads AS tp ON tp.sha256 = f.raw_value_payload_sha256 "
+                    "WHERE rif.issue_id = ? "
                     "ORDER BY rif.candidate_order",
                     (issue_id,),
                 )
@@ -1308,6 +1464,20 @@ class EvidenceStore:
                     "report_evaluations",
                 )
             }
+            payload_rows = connection.execute(
+                f"SELECT f.raw_value_payload_sha256, {_RAW_PAYLOAD_COLUMNS} "
+                "FROM facts AS f JOIN text_payloads AS tp "
+                "ON tp.sha256 = f.raw_value_payload_sha256 "
+                "WHERE f.snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchall()
+            payload_sizes: dict[str, tuple[int, int]] = {}
+            for row in payload_rows:
+                _decode_text_payload(row)
+                payload_sizes[str(row["raw_value_payload_sha256"])] = (
+                    int(row["raw_payload_original_byte_size"]),
+                    int(row["raw_payload_compressed_byte_size"]),
+                )
             artifacts = self._verify_snapshot_artifacts(connection, snapshot_id)
             foreign_key_issues = tuple(
                 dict(row) for row in connection.execute("PRAGMA foreign_key_check")
@@ -1315,6 +1485,12 @@ class EvidenceStore:
             return {
                 "snapshot_id": snapshot_id,
                 "counts": counts,
+                "text_payloads": {
+                    "references": len(payload_rows),
+                    "distinct_payloads": len(payload_sizes),
+                    "original_bytes": sum(size[0] for size in payload_sizes.values()),
+                    "compressed_bytes": sum(size[1] for size in payload_sizes.values()),
+                },
                 "artifacts": artifacts,
                 "foreign_key_issues": foreign_key_issues,
                 "ok": not foreign_key_issues,
@@ -1886,16 +2062,20 @@ class EvidenceStore:
 
         fact_ids: dict[str, int] = {}
         for observation in bundle.observations:
+            raw_value_text, raw_value_payload_sha256 = _stored_raw_value_text(
+                connection, observation
+            )
             cursor = connection.execute(
                 "INSERT INTO facts("
                 "snapshot_id, observation_key, source_order, observation_origin, fact_kind, "
                 "source_document_id, source_locator, is_nil, validity_code, validity_name, "
                 "concept_id, display_qname, context_id, unit_id, raw_context_ref, raw_unit_ref, "
-                "xml_id, source_line, top_level_order, raw_value_text, typed_value_kind, "
-                "typed_value_text, is_numeric, numeric_conversion_error, decimals, precision, "
-                "language, inline_metadata_json, legacy_report_label_text"
+                "xml_id, source_line, top_level_order, raw_value_text, "
+                "raw_value_payload_sha256, typed_value_kind, typed_value_text, is_numeric, "
+                "numeric_conversion_error, decimals, precision, language, inline_metadata_json, "
+                "legacy_report_label_text"
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                "?, ?, ?, ?, ?, ?, ?, ?)",
+                "?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     snapshot_id,
                     observation.key,
@@ -1916,9 +2096,10 @@ class EvidenceStore:
                     observation.xml_id,
                     observation.source_line,
                     observation.top_level_order,
-                    observation.raw_value_text,
+                    raw_value_text,
+                    raw_value_payload_sha256,
                     observation.typed_value_kind,
-                    observation.typed_value_text,
+                    _stored_typed_value_text(observation),
                     observation.is_numeric,
                     observation.numeric_conversion_error,
                     observation.decimals,
@@ -2481,9 +2662,19 @@ class EvidenceStore:
             )
         }
         rows = connection.execute(
-            "SELECT * FROM facts WHERE snapshot_id = ? ORDER BY source_order", (snapshot_id,)
+            f"SELECT f.*, {_RAW_PAYLOAD_COLUMNS} FROM facts AS f "
+            "LEFT JOIN text_payloads AS tp ON tp.sha256 = f.raw_value_payload_sha256 "
+            "WHERE f.snapshot_id = ? ORDER BY f.source_order",
+            (snapshot_id,),
         ).fetchall()
         fact_keys = {int(row["id"]): str(row["observation_key"]) for row in rows}
+        fact_values: dict[int, tuple[str | None, str | None]] = {}
+        for row in rows:
+            raw_value_text = _loaded_raw_value_text(row)
+            fact_values[int(row["id"])] = (
+                raw_value_text,
+                _loaded_typed_value_text(row, raw_value_text),
+            )
         return tuple(
             ObservationRecord(
                 key=str(row["observation_key"]),
@@ -2515,15 +2706,11 @@ class EvidenceStore:
                 top_level_order=(
                     int(row["top_level_order"]) if row["top_level_order"] is not None else None
                 ),
-                raw_value_text=(
-                    str(row["raw_value_text"]) if row["raw_value_text"] is not None else None
-                ),
+                raw_value_text=fact_values[int(row["id"])][0],
                 typed_value_kind=(
                     str(row["typed_value_kind"]) if row["typed_value_kind"] is not None else None
                 ),
-                typed_value_text=(
-                    str(row["typed_value_text"]) if row["typed_value_text"] is not None else None
-                ),
+                typed_value_text=fact_values[int(row["id"])][1],
                 is_numeric=_bool(row["is_numeric"]),
                 numeric_conversion_error=(
                     str(row["numeric_conversion_error"])

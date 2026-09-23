@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sec_inline_financials.errors import ArtifactError
+from sec_inline_financials.evidence_models import FilingSectionRecord
+from sec_inline_financials.filing_sections import extract_filing_sections
+from sec_inline_financials.storage.artifacts import ArtifactStore
 from sec_inline_financials.storage.config import evidence_runtime_paths
 
 
@@ -185,7 +190,7 @@ def _load_sections(
     connection: sqlite3.Connection,
     filings: tuple[FilingChoice, ...],
     sections: tuple[SectionChoice, ...],
-) -> dict[tuple[int, str], sqlite3.Row]:
+) -> dict[tuple[int, str], dict[str, object]]:
     snapshot_placeholders = ", ".join("?" for _ in filings)
     section_placeholders = ", ".join("?" for _ in sections)
     parameters = tuple(filing.snapshot_id for filing in filings) + tuple(
@@ -208,18 +213,96 @@ def _load_sections(
             fs.content_sha256,
             fs.diagnostic,
             sd.document_key,
-            sd.original_uri
+            sd.original_uri,
+            a.sha256 AS artifact_sha256,
+            a.relative_object_path,
+            a.byte_size AS artifact_byte_size,
+            a.media_type AS artifact_media_type
         FROM filing_sections AS fs
         JOIN source_documents AS sd
           ON sd.snapshot_id = fs.snapshot_id
          AND sd.id = fs.source_document_id
+        LEFT JOIN artifacts AS a
+          ON a.id = sd.artifact_id
         WHERE fs.snapshot_id IN ({snapshot_placeholders})
           AND fs.section_key IN ({section_placeholders})
         ORDER BY fs.snapshot_id, fs.section_order
         """,
         parameters,
     ).fetchall()
-    return {(int(row["snapshot_id"]), str(row["section_key"])): row for row in rows}
+    return {(int(row["snapshot_id"]), str(row["section_key"])): dict(row) for row in rows}
+
+
+def _complete_sections_from_artifacts(
+    section_rows: dict[tuple[int, str], dict[str, object]],
+    *,
+    filings: tuple[FilingChoice, ...],
+    artifacts_root: Path,
+) -> dict[tuple[int, str], dict[str, object]]:
+    filings_by_snapshot = {filing.snapshot_id: filing for filing in filings}
+    artifact_store = ArtifactStore(artifacts_root)
+    parsed_cache: dict[tuple[str, str], dict[str, FilingSectionRecord]] = {}
+    completed: dict[tuple[int, str], dict[str, object]] = {}
+
+    for key, stored_row in section_rows.items():
+        snapshot_id, section_key = key
+        filing = filings_by_snapshot[snapshot_id]
+        document_key = str(stored_row["document_key"])
+        relative_path = stored_row["relative_object_path"]
+        artifact_sha256 = stored_row["artifact_sha256"]
+        artifact_byte_size = stored_row["artifact_byte_size"]
+        if relative_path is None or artifact_sha256 is None or artifact_byte_size is None:
+            raise RuntimeError(
+                f"Snapshot {snapshot_id} section {section_key} has no retained source artifact."
+            )
+
+        cache_key = (filing.form, str(relative_path))
+        parsed_sections = parsed_cache.get(cache_key)
+        if parsed_sections is None:
+            try:
+                artifact_path = artifact_store.resolve(
+                    str(relative_path),
+                    str(artifact_sha256),
+                    int(artifact_byte_size),
+                )
+                extracted = extract_filing_sections(
+                    artifact_path.read_bytes(),
+                    form=filing.form,
+                    source_document_key=document_key,
+                )
+            except ArtifactError as exc:
+                raise RuntimeError(
+                    f"Could not verify retained source artifact for snapshot {snapshot_id}: {exc}"
+                ) from exc
+            parsed_sections = {section.section_key: section for section in extracted}
+            parsed_cache[cache_key] = parsed_sections
+
+        extracted_section = parsed_sections.get(section_key)
+        if extracted_section is None:
+            raise RuntimeError(
+                f"The retained source artifact for snapshot {snapshot_id} does not define "
+                f"section {section_key}."
+            )
+
+        row = dict(stored_row)
+        row.update(
+            {
+                "section_order": extracted_section.section_order,
+                "part": extracted_section.part,
+                "item": extracted_section.item,
+                "title": extracted_section.title,
+                "extraction_status": extracted_section.extraction_status,
+                "heading_text": extracted_section.heading_text,
+                "source_locator_start": extracted_section.source_locator_start,
+                "source_locator_end": extracted_section.source_locator_end,
+                "content_text": extracted_section.content_text,
+                "content_sha256": extracted_section.content_sha256,
+                "diagnostic": extracted_section.diagnostic,
+                "content_basis": "verified retained source artifact (read-only extraction)",
+            }
+        )
+        completed[key] = row
+    return completed
 
 
 def _prompt_company(companies: tuple[CompanyChoice, ...]) -> CompanyChoice:
@@ -333,7 +416,7 @@ def _render_report(
     report_kind: str,
     filings: tuple[FilingChoice, ...],
     sections: tuple[SectionChoice, ...],
-    section_rows: dict[tuple[int, str], sqlite3.Row],
+    section_rows: dict[tuple[int, str], Mapping[str, object]],
     generated_at: datetime,
 ) -> str:
     lines = [
@@ -402,6 +485,7 @@ def _render_report(
                     f"Source start: {_format_optional(row['source_locator_start'])}",
                     f"Source end: {_format_optional(row['source_locator_end'])}",
                     f"Content SHA-256: {_format_optional(row['content_sha256'])}",
+                    f"Content basis: {_format_optional(row.get('content_basis'))}",
                     f"Diagnostic: {_format_optional(row['diagnostic'])}",
                     "",
                     "CONTENT",
@@ -461,7 +545,10 @@ def main() -> int:
             )
 
         print(f"Reading stored evidence from: {runtime_paths.database.resolve()}")
-        print("This inspection does not contact SEC or run Arelle.")
+        print(
+            "This inspection does not contact SEC or run Arelle; selected sections are "
+            "rebuilt read-only from verified retained filing artifacts."
+        )
 
         with closing(_connect_read_only(runtime_paths.database)) as connection:
             companies = _load_companies(connection)
@@ -483,6 +570,11 @@ def main() -> int:
                 )
             selected_sections = _prompt_sections(available_sections, len(selected_filings))
             section_rows = _load_sections(connection, selected_filings, selected_sections)
+            section_rows = _complete_sections_from_artifacts(
+                section_rows,
+                filings=selected_filings,
+                artifacts_root=runtime_paths.artifacts,
+            )
 
         generated_at = datetime.now(timezone.utc)
         report_text = _render_report(

@@ -389,7 +389,8 @@ the original snapshot. Failed-attempt logs are audit records, not partial snapsh
 | `context_dimensions` | id, snapshot_id, context_id, source_order, axis expanded name, member_kind, context_element; optional axis/member concept IDs, explicit member expanded name, typed XML/text/hash |
 | `units` | id, snapshot_id, source_order, source_document_id, source_locator, raw XML; optional XML ID, legacy_report_unit_text, canonical_hash |
 | `unit_measures` | unit_id, side, measure_order, namespace_uri, local_name, display_qname; PK unit_id + side + measure_order |
-| `facts` | id, snapshot_id, source_order, observation_origin, fact_kind, source_document_id, source_locator, is_nil, validity_code/name; optional concept_id/QName, context_id, unit_id, raw contextRef/unitRef, parent_fact_id, XML ID, source line, top_level_order, raw_value_text, typed_value_kind/text, is_numeric, decimals, precision, language, Inline metadata JSON, legacy_report_label_text |
+| `text_payloads` | SHA-256 primary key, UTF-8 encoding, zlib codec, original/compressed byte sizes, compressed bytes, created_at; content-addressed cold text shared without merging fact occurrences |
+| `facts` | id, snapshot_id, source_order, observation_origin, fact_kind, source_document_id, source_locator, is_nil, validity_code/name; optional concept_id/QName, context_id, unit_id, raw contextRef/unitRef, parent_fact_id, XML ID, source line, top_level_order, inline raw_value_text or raw_value_payload_sha256, typed_value_kind/text, is_numeric, decimals, precision, language, Inline metadata JSON, legacy_report_label_text |
 | `extraction_diagnostics` | id, snapshot_id, code, severity, message, source_order; optional fact/context/unit/source-document links and raw details |
 
 Every fact has a unique `(snapshot_id, source_order)`. There is deliberately no

@@ -98,6 +98,7 @@ class CompanyDataPurger:
             connection.execute("PRAGMA defer_foreign_keys = ON")
             _queue_staging_directories(connection)
             _delete_target_rows(connection)
+            _delete_unreferenced_text_payloads(connection)
             _queue_unreferenced_artifacts(connection)
             _delete_unreferenced_artifact_records(connection)
             _delete_unreferenced_concepts(connection)
@@ -417,6 +418,13 @@ def _delete_unreferenced_artifact_records(connection: sqlite3.Connection) -> Non
         "AND NOT EXISTS(SELECT 1 FROM snapshot_artifacts WHERE artifact_id = artifacts.id) "
         "AND NOT EXISTS(SELECT 1 FROM attempt_artifacts WHERE artifact_id = artifacts.id) "
         "AND NOT EXISTS(SELECT 1 FROM source_documents WHERE artifact_id = artifacts.id)"
+    )
+
+
+def _delete_unreferenced_text_payloads(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "DELETE FROM text_payloads WHERE NOT EXISTS("
+        "SELECT 1 FROM facts WHERE raw_value_payload_sha256 = text_payloads.sha256)"
     )
 
 

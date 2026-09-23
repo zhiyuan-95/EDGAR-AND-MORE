@@ -79,6 +79,64 @@ size, and SQLite foreign keys. `resolve_artifact` verifies the object again befo
 returning its local path. Missing or changed bytes are integrity failures; the
 database record is preserved for diagnosis.
 
+## Compaction, deduplication, and retention contract
+
+New string-valued facts are stored losslessly without duplicating identical text
+across `facts.raw_value_text` and `facts.typed_value_text`. `EvidenceStore` stores
+`typed_value_text` as `NULL` only when `typed_value_kind = 'string'` and the typed
+text is exactly equal to the raw text. `load_snapshot`, `list_facts`, `get_fact`,
+and mapping-result reads reconstruct the typed value from the raw value. If the
+two strings differ, or the typed kind is numeric, date, QName, XML, or another
+kind, both representations are retained.
+
+Schema migration `0006_compressed_text_payloads.sql` adds the content-addressed
+`text_payloads` table and `facts.raw_value_payload_sha256`. On new writes, a
+nonnumeric string raw value is payload-backed only when its UTF-8 representation
+is at least 1 KiB and zlib compression is smaller than the original. The payload
+row records its original SHA-256, UTF-8 encoding, codec, original/compressed byte
+sizes, compressed bytes, and creation time. Small, numeric, and incompressible
+values remain inline. `load_snapshot`, bounded fact reads, conflict reads, mapping
+candidate reads, and metric-result reads reconstruct values through
+`EvidenceStore`; direct SQLite consumers must not assume `raw_value_text` is
+non-NULL when `raw_value_payload_sha256` is present.
+
+Snapshot audits decompress every referenced text payload and verify its compressed
+size, original size, UTF-8 encoding, and SHA-256. Corruption is an explicit storage
+error. Company purge removes only payloads that have no remaining fact reference.
+The migration is forward-write only: it does not rewrite existing inline values or
+run `VACUUM` against an existing store.
+
+This is representation compaction, not semantic fact deduplication. Every
+Observed Filing Fact remains a separate row even when its displayed value equals
+another row. Period, dimensions, unit, validity, source location, and conflict
+lineage can make equal-looking occurrences materially different.
+
+Immutable artifacts use a separate rule: identical SHA-256 content shares one
+physical object under `objects/sha256`, while every snapshot and processing
+attempt keeps its own reference. Objects with different bytes are never merged.
+An artifact is eligible for deletion only after no retained snapshot, source
+document, or processing attempt references it.
+
+Artifact objects remain stored as their exact original bytes. Migration 0006 does
+not add artifact-file compression because `ArtifactStore.resolve()` currently
+returns a verified path to those exact bytes; changing that contract requires a
+separate cache/materialization design and acceptance test.
+
+Committed history is retained by default. The active five-10-K/twelve-10-Q Filing
+Window is a publication selection, not a deletion threshold. Refreshes do not
+prune older snapshots, facts, sections, evaluations, attempts, or artifacts. The
+implemented deletion path is the explicit company-scoped purge below: preview is
+the default, `--execute` is required, active ingestion blocks the operation, and
+shared artifacts survive.
+
+Rows written before string compaction remain fully readable but are not rewritten
+automatically. Reclaiming their existing duplicate column payload is a separate
+maintenance operation: stop ingestion, create and audit a backup, produce a
+read-only estimate, update only exact string duplicates, run integrity and replay
+checks, and use SQLite `VACUUM` only after confirming sufficient temporary disk
+space. No automatic selective-history pruning or historical rewrite is currently
+implemented.
+
 ## Restart recovery
 
 `recover_interrupted_attempts(store)` marks work owned by a process that is no longer

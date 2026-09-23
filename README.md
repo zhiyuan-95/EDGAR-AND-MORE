@@ -128,6 +128,30 @@ the complete observed-concept catalog, all Arelle-exposed fact occurrences,
 structured conflict-candidate lineage, report roles, validation messages, and
 role-scoped calculation relationships. The report remains a derived presentation.
 
+String-valued facts use lossless column compaction on new writes. When the exact
+typed string equals the raw source text, SQLite stores the text once in
+`raw_value_text`; `EvidenceStore` reconstructs `typed_value_text` on every public
+read. Different raw/typed strings and all other typed-value kinds retain both
+representations. This does not merge Observed Filing Facts: equal values with
+different periods, dimensions, units, validity, or source locations remain
+separate rows.
+
+Large nonnumeric string facts use an additional lossless cold-payload layer on
+new writes. When the UTF-8 raw value is at least 1 KiB and zlib makes it smaller,
+the fact keeps its occurrence metadata and references one SHA-256-addressed row in
+`text_payloads`; small strings, numeric facts, and incompressible values remain
+inline. Public `EvidenceStore` reads verify, decompress, and reconstruct the exact
+raw and typed strings. Equal payload bytes may be shared without merging their
+Observed Filing Fact rows. Existing inline rows remain readable and are not
+rewritten automatically.
+
+Retention is conservative. The active Filing Window selects current evidence but
+does not delete older snapshots, runs, evaluations, or artifacts. Artifact bytes
+are globally deduplicated only when their SHA-256 hashes match. Automatic
+history pruning is not implemented; deletion remains an explicit, preview-first
+company purge, and referenced or shared artifacts are preserved. The purge also
+removes a compressed text payload only after no retained fact references it.
+
 See the [evidence-storage design](docs/designs/evidence-storage.md) and
 [storage runbook](docs/evidence_storage_runbook.md) for the implemented interface,
 runtime layout, audit, backup, and recovery procedures.
