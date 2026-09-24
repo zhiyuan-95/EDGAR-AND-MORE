@@ -25,8 +25,12 @@ A finished, human-readable inspection artifact generated only when the user expl
 _Avoid_: Source of truth, complete filing record
 
 **Frontend**:
-The planned local browser interface for viewing the seven Target Metrics and their evidence, requesting evidence downloads, reviewing Mapping Recommendations, and initiating refreshes through the local backend.
+The planned production browser interface for viewing the seven Target Metrics and their evidence, requesting evidence downloads, reviewing Mapping Recommendations, and initiating refreshes through the local backend. The checked-in HTML is an interactive sample-data prototype, not a live client.
 _Avoid_: Showcase Report, direct database client
+
+**Frontend Prototype**:
+The checked-in static HTML used to validate a selection-first filing and metric-lineage workflow with explicitly illustrative records. It has no local API or SQLite connection.
+_Avoid_: Implemented frontend, live backend
 
 **Filing Window**:
 The latest five selected Inline XBRL 10-K filings and the latest twelve selected Inline XBRL 10-Q filings for a company. The quarterly portion contains filed 10-Q periods rather than inferred Q4 periods.
@@ -38,7 +42,7 @@ _Avoid_: Mapping Recommendation, inferred concept match
 
 **Direct Mapping Rule Set**:
 The frozen, versioned ordering of primary and alternative concepts used by Direct Mapping. `direct-mapping-v1` is paired with the seven `target-metrics-v1` definitions.
-_Avoid_: Runtime parsing of `mapping.txt`, unversioned rules
+_Avoid_: Runtime parsing of `docs/mapping.txt`, unversioned rules
 
 **Metric Evaluation**:
 An immutable annual or quarterly Direct Mapping run over one exact published filing/snapshot window. An unchanged window and rule identity reuse the existing evaluation.

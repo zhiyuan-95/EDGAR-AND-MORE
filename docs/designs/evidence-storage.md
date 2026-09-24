@@ -1,7 +1,7 @@
 # Section 3.1: Evidence Storage Design and Implementation Record
 
-Date: 2026-09-08; updated 2026-09-14
-Status: IMPLEMENTED; automated acceptance and recorded live 5/12 evidence-v2 runs passed
+Date: 2026-09-08; updated 2026-09-23
+Status: IMPLEMENTED; current automated coverage is narrower than the historical acceptance record
 Basis: `docs/designs/project_proposal.txt`, especially sections 2.2, 3.1, and Milestone 1
 Design choice: fresh plan; stored-evidence replay, selected by the project owner  
 Reviewed checkout at drafting: branch `gstack`
@@ -45,7 +45,7 @@ separate from the stored-evidence Direct Mapping command.
 
 This evidence-storage design does not define mapping rules, quarter derivation, a
 scheduler, a frontend, or a new financial-metric policy. Direct Mapping rules and
-persistence are implemented separately in `direct_mapping_implementation_plan.txt`.
+persistence are implemented separately in `direct-mapping-implementation-plan.md`.
 
 ## 2. Implemented code seams
 
@@ -58,7 +58,8 @@ The implementation uses these storage-to-report seams:
 | `evidence_classification.py::classify_report` | Applies versioned eligibility, duplicate selection, and conflict classification |
 | `storage/report_projection.py::project_stored_report` | Rebuilds annual or quarterly renderer models from one stored snapshot and evaluation |
 | `report.py` | Formats projected read models and assigns presentation-only E/D/R labels |
-| `tests/inspect_ingestion.py` | Selects fiscal years, renders stored evaluations, and exports complete fact occurrences |
+| `tests/inspect_inline_ingestion.py` | Selects fiscal years, renders stored evaluations, and exports complete fact occurrences |
+| `tests/inspect_filings.py` | Reads SQLite in query-only mode and rebuilds selected narrative sections from verified retained source artifacts |
 
 The locked Arelle package is 2.41.7. Its `model.facts` contains top-level facts;
 `factsInInstance` includes nested facts and is implemented as a set. Complete
@@ -98,12 +99,21 @@ src/sec_inline_financials/
   evidence_extraction.py      Arelle-object to detached-record conversion
   evidence_classification.py  Existing report eligibility and selection semantics
   evidence_ingestion.py       One-filing and explicit filing-window orchestration
+  company_ingestion.py        Request-triggered refresh and mapping orchestration
+  company_purge.py            Preview-first company deletion and cleanup journal
+  direct_mapping.py           Pure deterministic metric resolver
+  mapping_service.py          Stored-evidence mapping selection and publication
+  sec_taxonomy_retry.py       Scoped SEC extension-taxonomy 503 retry wrapper
+  arelle_sec_retry_plugin.py  Installs that wrapper into the Arelle web cache
   storage/
     database.py              Connections and transaction ownership
     migrations.py            Numbered migration runner
     sql/0001_evidence.sql     Initial schema, constraints, indexes, views
     sql/0002_company_refresh.sql  Refresh dates and active-window state
     sql/0003_filing_sections.sql Narrative-section records and constraints
+    sql/0004_direct_mapping.sql  Snapshot bindings and immutable mapping results
+    sql/0005_company_purge.sql   Journal for post-commit file cleanup
+    sql/0006_compressed_text_payloads.sql  Lossless cold text payloads
     artifacts.py             Stage, verify, install and resolve retained files
     evidence_store.py        Save/load snapshots and bounded evidence queries
     report_projection.py     Explicit adapter used for report equivalence checks
@@ -710,20 +720,20 @@ Errors distinguish schema incompatibility, busy database, capture failure,
 extraction failure, snapshot mismatch, missing artifact, and hash mismatch. Do not
 return an empty result for an operational failure.
 
-## 11. Later storage extensions, without premature mapping policy
+## 11. Implemented mapping tables and planned recommendation extensions
 
-Use new migrations when the corresponding milestone defines its behavior. The
-evidence schema must allow these links without rewriting old facts:
+Migration 0004 added the Direct Mapping rows without rewriting stored facts. Later
+recommendation work must continue that append-only evidence relationship:
 
-| Later entity | Required evidence relationship |
-|---|---|
-| `target_metrics` | Stable metric key and definition version |
-| `metric_evaluations` / `metric_results` | Company, exact period, metric definition, policy version, outcome, exact value/unit when present; explicit snapshot lineage |
-| `metric_result_facts` | Result-to-fact links with roles; support several source facts without embedding comma-separated IDs |
-| `evidence_packets` | Exact retained packet artifact, serialization/version metadata, target metric/period, all snapshot and fact links |
-| `model_requests` / `model_responses` | Exact submitted/returned payload artifacts, model/configuration, timestamps and packet identity; authentication secrets excluded |
-| `mapping_recommendations` | Proposed concept/rule and supporting packet/response/facts; pending until reviewed |
-| `review_decisions` | Append-only approval/rejection history, reviewed recommendation version, timestamp and reason |
+| Entity | Status | Evidence relationship |
+|---|---|---|
+| `target_metrics` | Implemented | Stable metric key and definition version |
+| `metric_evaluations` / `metric_results` | Implemented | Company, report kind, rule/window identity, outcome, snapshot, and report-evaluation lineage |
+| `metric_result_facts` | Implemented | One exact selected fact for each reported Direct Mapping result |
+| `evidence_packets` | Planned | Exact retained packet artifact, serialization/version metadata, target metric/period, all snapshot and fact links |
+| `model_requests` / `model_responses` | Planned | Exact submitted/returned payload artifacts, model/configuration, timestamps and packet identity; authentication secrets excluded |
+| `mapping_recommendations` | Planned | Proposed concept/rule and supporting packet/response/facts; pending until reviewed |
+| `review_decisions` | Planned | Append-only approval/rejection history, reviewed recommendation version, timestamp and reason |
 
 Generic artifacts already support these files, but no packet is generated and no
 recommendation is requested before Milestone 3. Direct Mapping resolution traces
@@ -916,12 +926,13 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-Live pytest acceptance remains opt-in using the existing SEC configuration mechanism.
-Do not place credentials or user-agent contact information in acceptance artifacts.
-As of 2026-09-14, the local suite passes with 25 tests and one skipped live test.
-Recorded production CLI runs contain successful full 5/12 evidence-v2 windows, and
-current snapshot audits verify their linked artifact hashes and foreign keys. These
-runs do not prove a future new-accession refresh or SEC EFM-complete validation.
+The current checkout contains no opt-in live pytest. Do not place credentials or
+user-agent contact information in any manual acceptance artifact. The active tests
+cover narrative sections, compressed text payloads/purge cleanup, and the scoped SEC
+taxonomy retry; they do not recreate the broader historical storage test suite.
+Recorded production CLI runs contain successful full 5/12 evidence-v2 windows and
+snapshot audits of linked artifacts and foreign keys. Those records do not prove a
+future new-accession refresh or SEC EFM-complete validation.
 
 ## 14. Review status and remaining implementation probes
 
@@ -936,16 +947,17 @@ implementation lives in `evidence_models.py`, `evidence_extraction.py`,
 The interactive report script reuses `report.py` only after
 `project_stored_report` reconstructs renderer models from persisted evidence.
 
-Local fixtures verify exact source capture, undefined/nested observation detachment,
-narrative-section parsing, and snapshot replay. Recorded real-filing 5/12 runs verify
-the production storage path. This is not permission to reduce the
-all-observed-facts requirement. A missing required resource or unrepresentable
+Current local fixtures verify narrative-section parsing/read-only reconstruction and
+lossless compressed-text reconstruction. Recorded real-filing 5/12 runs provide the
+historical production-storage acceptance evidence. This is not permission to reduce
+the all-observed-facts requirement. A missing required resource or unrepresentable
 exposed observation still fails the import instead of committing a shortened
 snapshot.
 
-Milestone 1 is implemented and has automated plus recorded live-window evidence.
+Milestone 1 is implemented and has current focused tests plus recorded live-window
+evidence.
 The remaining live new-accession/performance probe is tracked as an acceptance
 boundary, not as missing storage functionality. Direct Mapping is implemented and
-accepted separately in `direct_mapping_implementation_plan.txt`; recommendation and
+documented separately in `direct-mapping-implementation-plan.md`; recommendation and
 frontend milestones retain their own acceptance gates. Request-triggered evidence
 updates are implemented separately in `ingestAndUpdate.txt`.

@@ -118,7 +118,11 @@ For each filing:
 4. Otherwise create an attempt-private staging directory and Arelle cache.
 5. Open the filing URL with Arelle in online mode using the configured SEC User-Agent.
    Validation is enabled with Calculation 1.0 deduplication (`c10d`), duplicate-fact
-   validation, warning-level buffered logs, and the pinned SEC transformation plugin.
+   validation, warning-level buffered logs, the pinned SEC transformation plugin,
+   and the local SEC extension-taxonomy retry plugin. The retry applies only to an
+   HTTP 503 for an HTTPS `.xsd` URL below `sec.gov/Archives/edgar/data/` or
+   `www.sec.gov/Archives/edgar/data/`; it makes three additional attempts after
+   1, 2, and 4 seconds. Other failures propagate without this retry.
 6. Before the Arelle session closes, capture the raw log and detach all exposed
    recognized and undefined observations, concepts, labels, contexts, units,
    dimensions, diagnostics, validation records, and supported calculation networks.
@@ -266,7 +270,7 @@ Ingestion never renders or writes TXT reports. Reports are generated only from
 stored snapshots through:
 
 ```text
-uv run --no-sync python tests/inspect_ingestion.py
+uv run --no-sync python tests/inspect_inline_ingestion.py
 ```
 
 The script prompts for the ticker, report type, and fiscal years, then writes a TXT
@@ -282,12 +286,11 @@ browser frontend remain planned. Ingestion does not synchronize a retrieval inde
 
 ## 13. Verification boundary
 
-The offline suite covers migrations, extraction, section parsing, immutable storage,
-artifact checks, replay, active-window refresh, partial failures, backup, and
-recovery. The opt-in pytest live test covers complete detached evidence extraction,
-not persistence or stored report replay. Recorded production CLI runs have
-separately verified full 5/12 evidence-v2 windows and artifact audits, but a live
-update that discovers a genuinely new accession remains a separate acceptance case.
+The active offline suite covers narrative-section extraction/replay, lossless text
+payload compaction and purge cleanup, and the scoped SEC taxonomy retry. Historical
+production CLI runs separately recorded full 5/12 evidence-v2 windows and artifact
+audits. The current checkout has no opt-in live pytest, and a live update that
+discovers a genuinely new accession remains a separate acceptance case.
 
 Primary implementation references:
 
@@ -295,6 +298,8 @@ Primary implementation references:
 - `src/sec_inline_financials/company_ingestion.py`
 - `src/sec_inline_financials/sec_client.py`
 - `src/sec_inline_financials/arelle_adapter.py`
+- `src/sec_inline_financials/arelle_sec_retry_plugin.py`
+- `src/sec_inline_financials/sec_taxonomy_retry.py`
 - `src/sec_inline_financials/evidence_extraction.py`
 - `src/sec_inline_financials/filing_sections.py`
 - `src/sec_inline_financials/evidence_ingestion.py`
