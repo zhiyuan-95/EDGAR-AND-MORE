@@ -75,7 +75,13 @@ class EvidenceIngestionService:
         quarterly = self._sec_client.discover_quarterly_inline_filings(
             company, count=quarterly_count
         )
-        return self.ingest_selected_window(company, annual=annual, quarterly=quarterly)
+        return self.ingest_selected_window(
+            company,
+            annual=annual,
+            quarterly=quarterly,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+        )
 
     def ingest_selected_window(
         self,
@@ -83,14 +89,18 @@ class EvidenceIngestionService:
         *,
         annual: list[Filing],
         quarterly: list[Filing],
+        annual_count: int | None = None,
+        quarterly_count: int | None = None,
     ) -> RunOutcome:
         """Persist an already discovered filing window without another SEC lookup."""
         run_id = self._store.create_processing_run(
             company,
             purpose="explicit-company-window-ingest",
             requested_window={
-                "annual_count": len(annual),
-                "quarterly_count": len(quarterly),
+                "annual_count": len(annual) if annual_count is None else annual_count,
+                "quarterly_count": len(quarterly) if quarterly_count is None else quarterly_count,
+                "annual_found": len(annual),
+                "quarterly_found": len(quarterly),
                 "accessions": [filing.accession for filing in (*annual, *quarterly)],
             },
         )

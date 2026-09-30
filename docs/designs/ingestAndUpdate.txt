@@ -93,12 +93,21 @@ When a refresh is required:
 6. Quarterly selection keeps the latest eligible `isInlineXBRL = true` exact-form
    `10-Q` filings.
 
+The requested counts are upper bounds, not a completeness gate. If SEC history has
+fewer eligible filings than requested for either form, discovery returns every
+eligible filing it found. The shortage is reported as a coverage warning and does
+not count as an ingestion failure. Each found filing still continues through Arelle,
+evidence storage, classification, and Direct Mapping. Annual and quarterly mapping
+are evaluated independently, so an empty form does not prevent mapping the other
+non-empty form. No placeholder filing or period is created for missing history.
+
 `10-K/A` and `10-Q/A` do not consume window positions because discovery requests
 exact forms. SEC submissions provide identity and filing URLs; financial values come
 from the filing-scoped Arelle models, not the SEC Company Facts API.
 
-If SEC discovery raises `DiscoveryError` and no usable evidence exists, the error
-propagates. If usable evidence already exists, return
+If SEC access or metadata parsing raises `DiscoveryError` and no usable evidence
+exists, the error propagates. A count shortage by itself does not raise
+`DiscoveryError`. If usable evidence already exists, return
 `refresh_failed_using_local_data` and keep the published local window unchanged.
 
 ## 5. Per-filing Arelle processing

@@ -315,8 +315,9 @@ Arelle.
 - process all selected filing documents with Arelle.
 
 The ingestion CLI accepts positive `--annual-count` and `--quarterly-count` values;
-the default is 5/12. Insufficient requested annual or quarterly history produces an
-error instead of a silently shortened result.
+the default is 5/12. These counts are upper bounds: when SEC history contains fewer
+eligible filings, ingestion reports a coverage warning and processes every filing it
+found instead of failing or inventing missing periods.
 Because companies do not file a 10-Q for Q4, these are the latest 12 filed 10-Q
 quarters, not 12 consecutive fiscal quarters.
 

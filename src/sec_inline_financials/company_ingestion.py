@@ -18,7 +18,7 @@ from sec_inline_financials.evidence_ingestion import (
     EvidenceProcessor,
     SecGateway,
 )
-from sec_inline_financials.evidence_models import RunOutcome, StoredCompanyState
+from sec_inline_financials.evidence_models import FilingOutcome, RunOutcome, StoredCompanyState
 from sec_inline_financials.mapping_models import CompanyMappingResult
 from sec_inline_financials.mapping_service import DirectMappingService
 from sec_inline_financials.models import Company, Filing
@@ -30,6 +30,7 @@ IngestionStatus = Literal[
     "initialized",
     "updated",
     "checked_no_update",
+    "checked_no_filings",
     "reused_local",
     "refresh_failed_using_local_data",
 ]
@@ -77,6 +78,7 @@ class CompanyIngestionResult:
     active_accessions: tuple[str, ...] = ()
     run: RunOutcome | None = None
     error: str | None = None
+    coverage_warning: str | None = None
     mapping: CompanyMappingResult | None = None
     mapping_error: str | None = None
 
@@ -136,10 +138,7 @@ class CompanyIngestionService:
         )
         if previous is not None and not should_check_sec:
             self._progress(f"Stored evidence is current for {requested}; SEC check skipped.")
-            mapping, mapping_error = self._evaluate_mapping(
-                requested,
-                require_complete_window=annual_count == 5 and quarterly_count == 12,
-            )
+            mapping, mapping_error = self._evaluate_mapping(requested)
             return CompanyIngestionResult(
                 company=previous.company,
                 status="reused_local",
@@ -180,46 +179,63 @@ class CompanyIngestionService:
 
         known_accessions = set(previous.known_accessions if previous is not None else ())
         selected = (*annual, *quarterly)
+        coverage_warning = _coverage_warning(
+            annual_found=len(annual),
+            annual_requested=annual_count,
+            quarterly_found=len(quarterly),
+            quarterly_requested=quarterly_count,
+        )
         self._progress(
             f"Selected filings for {company.ticker}: "
             f"{len(annual)} annual, {len(quarterly)} quarterly."
         )
+        if coverage_warning is not None:
+            self._progress(coverage_warning)
         self._progress(f"Processing selected filings for {company.ticker}: {len(selected)} total.")
         new_accessions = tuple(
             filing.accession for filing in selected if filing.accession not in known_accessions
         )
-        evidence_service = EvidenceIngestionService(
-            sec_client=gateway,
-            processor=self._processor_factory(),
-            store=self._store,
-            progress=self._progress,
-        )
-        run = evidence_service.ingest_selected_window(
-            company,
-            annual=annual,
-            quarterly=quarterly,
-        )
-        failed = tuple(outcome for outcome in run.filings if outcome.status == "failed")
-        if run.status == "failed":
-            error = _failure_summary(failed)
-            if previous is not None and previous.has_evidence:
-                return _failed_refresh_result(
-                    previous,
-                    annual_due=annual_due,
-                    quarterly_due=quarterly_due,
-                    error=IngestionError(error),
-                    run=run,
+        run: RunOutcome | None = None
+        failed: tuple[FilingOutcome, ...] = ()
+        if selected:
+            evidence_service = EvidenceIngestionService(
+                sec_client=gateway,
+                processor=self._processor_factory(),
+                store=self._store,
+                progress=self._progress,
+            )
+            run = evidence_service.ingest_selected_window(
+                company,
+                annual=annual,
+                quarterly=quarterly,
+                annual_count=annual_count,
+                quarterly_count=quarterly_count,
+            )
+            failed = tuple(outcome for outcome in run.filings if outcome.status == "failed")
+            if run.status == "failed":
+                error = _failure_summary(failed)
+                if previous is not None and previous.has_evidence:
+                    return _failed_refresh_result(
+                        previous,
+                        annual_due=annual_due,
+                        quarterly_due=quarterly_due,
+                        error=IngestionError(error),
+                        run=run,
+                    )
+                raise IngestionError(
+                    f"Initial ingestion produced no usable filing evidence: {error}"
                 )
-            raise IngestionError(f"Initial ingestion produced no usable filing evidence: {error}")
 
         new_accession_set = set(new_accessions)
         new_forms = {filing.form for filing in selected if filing.accession in new_accession_set}
         failed_accessions = {outcome.accession for outcome in failed}
         failed_forms = {filing.form for filing in selected if filing.accession in failed_accessions}
-        latest_annual = max(annual, key=lambda filing: filing.filing_date)
-        latest_quarterly = max(quarterly, key=lambda filing: filing.filing_date)
-        latest_quarterly_period = self._store.fiscal_period_for_accession(
-            latest_quarterly.accession
+        latest_annual = max(annual, key=lambda filing: filing.filing_date, default=None)
+        latest_quarterly = max(quarterly, key=lambda filing: filing.filing_date, default=None)
+        latest_quarterly_period = (
+            self._store.fiscal_period_for_accession(latest_quarterly.accession)
+            if latest_quarterly is not None
+            else None
         )
         next_annual = _next_check_after_refresh(
             previous=previous,
@@ -252,7 +268,9 @@ class CompanyIngestionService:
                 outcome.accession: outcome.snapshot_id
                 for outcome in run.filings
                 if outcome.snapshot_id is not None
-            },
+            }
+            if run is not None
+            else {},
             next_check_date_10k=next_annual,
             next_check_date_10q=next_quarterly,
         )
@@ -260,16 +278,16 @@ class CompanyIngestionService:
         if current is None:
             raise IngestionError("Company refresh committed without a readable company state.")
 
-        if previous is None or not previous.has_evidence:
-            status: IngestionStatus = "initialized"
+        status: IngestionStatus
+        if not selected:
+            status = "checked_no_filings"
+        elif previous is None or not previous.has_evidence:
+            status = "initialized"
         elif new_accessions:
             status = "updated"
         else:
             status = "checked_no_update"
-        mapping, mapping_error = self._evaluate_mapping(
-            company.ticker,
-            require_complete_window=annual_count == 5 and quarterly_count == 12,
-        )
+        mapping, mapping_error = self._evaluate_mapping(company.ticker)
         self._progress(f"Completed ingestion for {company.ticker}: {status}.")
         return CompanyIngestionResult(
             company=company,
@@ -281,6 +299,7 @@ class CompanyIngestionService:
             active_accessions=current.active_accessions,
             run=run,
             error=_failure_summary(failed) if failed else None,
+            coverage_warning=coverage_warning,
             mapping=mapping,
             mapping_error=mapping_error,
         )
@@ -288,14 +307,12 @@ class CompanyIngestionService:
     def _evaluate_mapping(
         self,
         ticker: str,
-        *,
-        require_complete_window: bool,
     ) -> tuple[CompanyMappingResult | None, str | None]:
         self._progress(f"Evaluating stored Direct Mapping for {ticker}...")
         try:
             result = DirectMappingService(self._store).evaluate_company(
                 ticker,
-                require_complete_window=require_complete_window,
+                require_complete_window=False,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -368,6 +385,27 @@ def _failure_summary(failures: Sequence[object]) -> str:
     return "; ".join(descriptions) or "all filing attempts failed"
 
 
+def _coverage_warning(
+    *,
+    annual_found: int,
+    annual_requested: int,
+    quarterly_found: int,
+    quarterly_requested: int,
+) -> str | None:
+    shortages: list[str] = []
+    if annual_found < annual_requested:
+        shortages.append(f"annual {annual_found}/{annual_requested}")
+    if quarterly_found < quarterly_requested:
+        shortages.append(f"quarterly {quarterly_found}/{quarterly_requested}")
+    if not shortages:
+        return None
+    total = annual_found + quarterly_found
+    return (
+        "SEC returned fewer eligible filings than requested "
+        f"({', '.join(shortages)}); processing all {total} filing(s) found."
+    )
+
+
 def _check_is_due(next_check: date | None, today: date) -> bool:
     return next_check is None or today >= next_check
 
@@ -376,7 +414,7 @@ def _next_check_after_refresh(
     *,
     previous: StoredCompanyState | None,
     form: Literal["10-K", "10-Q"],
-    latest_filing: Filing,
+    latest_filing: Filing | None,
     fiscal_period: str | None,
     check_was_due: bool,
     discovered_new: bool,
@@ -389,6 +427,8 @@ def _next_check_after_refresh(
         if previous is not None
         else None
     )
+    if latest_filing is None:
+        return _next_market_day(checked_on)
     if previous is None or not previous.has_evidence or discovered_new:
         months = 12 if form == "10-K" else 6 if (fiscal_period or "").upper() == "Q3" else 3
         return _previous_market_day(_add_months(latest_filing.filing_date, months))
@@ -510,15 +550,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{filing.accession}: {filing.status}")
     if result.error:
         print(f"Warning: {result.error}")
+    if result.coverage_warning:
+        print(f"Coverage warning: {result.coverage_warning}")
     if result.mapping is not None:
-        print(
-            f"Annual mapping: {result.mapping.annual.reported_count} reported, "
-            f"{result.mapping.annual.missing_count} missing"
-        )
-        print(
-            f"Quarterly mapping: {result.mapping.quarterly.reported_count} reported, "
-            f"{result.mapping.quarterly.missing_count} missing"
-        )
+        if result.mapping.annual is not None:
+            print(
+                f"Annual mapping: {result.mapping.annual.reported_count} reported, "
+                f"{result.mapping.annual.missing_count} missing"
+            )
+        else:
+            print(f"Annual mapping: not run ({result.mapping.annual_error})")
+        if result.mapping.quarterly is not None:
+            print(
+                f"Quarterly mapping: {result.mapping.quarterly.reported_count} reported, "
+                f"{result.mapping.quarterly.missing_count} missing"
+            )
+        else:
+            print(f"Quarterly mapping: not run ({result.mapping.quarterly_error})")
     if result.mapping_error:
         print(f"Mapping warning: {result.mapping_error}")
     return 0

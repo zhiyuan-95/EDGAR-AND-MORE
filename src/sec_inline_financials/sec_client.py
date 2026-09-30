@@ -71,11 +71,6 @@ class SecClient:
             count=count,
             select=_latest_by_fiscal_year,
         )
-        if len(selected) < count:
-            raise DiscoveryError(
-                f"Requested {count} annual Inline XBRL 10-K fiscal years, "
-                f"but SEC history has {len(selected)}."
-            )
         return selected[:count]
 
     def discover_quarterly_inline_filings(self, company: Company, *, count: int) -> list[Filing]:
@@ -85,11 +80,6 @@ class SecClient:
             count=count,
             select=_latest_by_report_date,
         )
-        if len(selected) < count:
-            raise DiscoveryError(
-                f"Requested {count} quarterly Inline XBRL 10-Q filings, "
-                f"but SEC history has {len(selected)}."
-            )
         return selected[:count]
 
     def _discover_inline_filings(

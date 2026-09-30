@@ -197,8 +197,10 @@ class MetricEvaluationRef:
 @dataclass(frozen=True)
 class CompanyMappingResult:
     company: Company
-    annual: MetricEvaluationRef
-    quarterly: MetricEvaluationRef
+    annual: MetricEvaluationRef | None
+    quarterly: MetricEvaluationRef | None
+    annual_error: str | None = None
+    quarterly_error: str | None = None
 
 
 def active_window_hash(snapshots: tuple[MappingSnapshotInput, ...]) -> str:

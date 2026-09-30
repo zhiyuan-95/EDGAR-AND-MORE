@@ -340,8 +340,6 @@ class EvidenceStore:
         accessions = [filing.accession for filing in (*annual, *quarterly)]
         if len(accessions) != len(set(accessions)):
             raise FilingMetadataError("A filing window may not contain duplicate accessions.")
-        if not annual or not quarterly:
-            raise FilingMetadataError("A filing window requires annual and quarterly filings.")
         bindings = snapshot_ids
         unknown_bindings = set(bindings).difference(accessions)
         if unknown_bindings:
@@ -394,8 +392,10 @@ class EvidenceStore:
                 "latest_10q_filing_date = ?, next_check_date_10k = ?, "
                 "next_check_date_10q = ?, updated_at = ? WHERE id = ?",
                 (
-                    max(filing.filing_date for filing in annual).isoformat(),
-                    max(filing.filing_date for filing in quarterly).isoformat(),
+                    max(filing.filing_date for filing in annual).isoformat() if annual else None,
+                    max(filing.filing_date for filing in quarterly).isoformat()
+                    if quarterly
+                    else None,
                     next_check_date_10k.isoformat(),
                     next_check_date_10q.isoformat(),
                     _now(),
@@ -959,8 +959,10 @@ class EvidenceStore:
             ]
             successes = sum(status in {"stored", "reused"} for status in statuses)
             failures = sum(status in {"failed", "interrupted"} for status in statuses)
-            if successes and failures:
-                status: Literal["succeeded", "partial", "failed"] = "partial"
+            if not statuses:
+                status: Literal["succeeded", "partial", "failed"] = "succeeded"
+            elif successes and failures:
+                status = "partial"
             elif successes and not failures:
                 status = "succeeded"
             else:

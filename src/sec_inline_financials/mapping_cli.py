@@ -34,8 +34,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {exc}")
         return 1
     print(f"{result.company.ticker}: direct mapping complete")
-    print(_evaluation_line("Annual", result.annual))
-    print(_evaluation_line("Quarterly", result.quarterly))
+    if result.annual is not None:
+        print(_evaluation_line("Annual", result.annual))
+    if result.quarterly is not None:
+        print(_evaluation_line("Quarterly", result.quarterly))
     return 0
 
 

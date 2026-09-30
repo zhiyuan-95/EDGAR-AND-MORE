@@ -38,20 +38,40 @@ class DirectMappingService:
         state = self._store.get_company_state(ticker)
         if state is None:
             raise MappingInputError(f"No stored company data found for {ticker.strip().upper()}.")
-        annual_inputs = self._store.list_mapping_inputs(ticker, "annual", "report-v1")
-        quarterly_inputs = self._store.list_mapping_inputs(ticker, "quarterly", "report-v1")
-        inputs = {"annual": annual_inputs, "quarterly": quarterly_inputs}
+        inputs: dict[ReportKind, tuple[MappingSnapshotInput, ...]] = {}
+        errors: dict[ReportKind, str | None] = {"annual": None, "quarterly": None}
+        report_kinds: tuple[ReportKind, ...] = ("annual", "quarterly")
+        for kind in report_kinds:
+            try:
+                inputs[kind] = self._store.list_mapping_inputs(ticker, kind, "report-v1")
+            except MappingInputError as exc:
+                if require_complete_window:
+                    raise
+                inputs[kind] = ()
+                errors[kind] = str(exc)
         if require_complete_window:
-            expected = {"annual": 5, "quarterly": 12}
+            expected: dict[ReportKind, int] = {"annual": 5, "quarterly": 12}
             for kind, count in expected.items():
                 actual = len(inputs[kind])
                 if actual != count:
                     raise MappingInputError(
                         f"Direct Mapping requires {count} active {kind} filings; found {actual}."
                     )
-        annual = self._evaluate_kind(ticker, "annual", inputs["annual"])
-        quarterly = self._evaluate_kind(ticker, "quarterly", inputs["quarterly"])
-        return CompanyMappingResult(company=state.company, annual=annual, quarterly=quarterly)
+        annual = (
+            self._evaluate_kind(ticker, "annual", inputs["annual"]) if inputs["annual"] else None
+        )
+        quarterly = (
+            self._evaluate_kind(ticker, "quarterly", inputs["quarterly"])
+            if inputs["quarterly"]
+            else None
+        )
+        return CompanyMappingResult(
+            company=state.company,
+            annual=annual,
+            quarterly=quarterly,
+            annual_error=errors["annual"],
+            quarterly_error=errors["quarterly"],
+        )
 
     def _evaluate_kind(
         self,
