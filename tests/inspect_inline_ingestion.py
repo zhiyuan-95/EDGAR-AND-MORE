@@ -77,10 +77,10 @@ def _find_annual_snapshots(database_path: Path, ticker: str) -> tuple[FilingSnap
     return tuple(sorted(newest_by_year.values(), key=lambda item: item.fiscal_year))
 
 
-def _find_complete_quarterly_years(
+def _find_quarterly_years(
     database_path: Path, ticker: str
 ) -> dict[int, tuple[FilingSnapshot, ...]]:
-    """Return fiscal years with newest stored snapshots for each of Q1, Q2, and Q3."""
+    """Return available Q1-Q3 snapshots grouped by fiscal year."""
     with closing(sqlite3.connect(database_path)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -122,13 +122,14 @@ def _find_complete_quarterly_years(
             ),
         )
 
-    complete: dict[int, tuple[FilingSnapshot, ...]] = {}
+    available: dict[int, tuple[FilingSnapshot, ...]] = {}
     fiscal_years = sorted({year for year, _period in newest_by_quarter})
     for fiscal_year in fiscal_years:
         quarter_keys = tuple((fiscal_year, period) for period in ("Q1", "Q2", "Q3"))
-        if all(key in newest_by_quarter for key in quarter_keys):
-            complete[fiscal_year] = tuple(newest_by_quarter[key] for key in quarter_keys)
-    return complete
+        available[fiscal_year] = tuple(
+            newest_by_quarter[key] for key in quarter_keys if key in newest_by_quarter
+        )
+    return available
 
 
 def _parse_year_selection(selection: str, available_years: tuple[int, ...]) -> tuple[int, ...]:
@@ -289,16 +290,16 @@ def main() -> int:
             available_years = tuple(item.fiscal_year for item in available_snapshots)
             print("Available annual fiscal years: " + ", ".join(map(str, available_years)))
         else:
-            quarterly_by_year = _find_complete_quarterly_years(paths.database, ticker)
+            quarterly_by_year = _find_quarterly_years(paths.database, ticker)
             if not quarterly_by_year:
-                raise RuntimeError(
-                    f"No fiscal year with stored Q1, Q2, and Q3 10-Q snapshots found for {ticker}."
-                )
+                raise RuntimeError(f"No stored Q1, Q2, or Q3 10-Q snapshots found for {ticker}.")
             available_years = tuple(quarterly_by_year)
-            print(
-                "Available quarterly fiscal years with Q1, Q2, and Q3: "
-                + ", ".join(map(str, available_years))
+            quarterly_periods = ", ".join(
+                f"{fiscal_year} "
+                f"({', '.join(snapshot.fiscal_period or '?' for snapshot in snapshots)})"
+                for fiscal_year, snapshots in quarterly_by_year.items()
             )
+            print("Available quarterly fiscal years and periods: " + quarterly_periods)
 
         selected_years = _prompt_for_years(available_years)
         if report_type == "annual":

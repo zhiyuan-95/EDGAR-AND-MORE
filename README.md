@@ -275,9 +275,10 @@ uv run --no-sync python tests/inspect_inline_ingestion.py
 ```
 
 The script prompts for a ticker, an annual or quarterly report, and one or more
-available fiscal years. Quarterly choices are limited to years with stored Q1, Q2,
-and Q3 snapshots. It writes both the rendered report and every retrieved fact
-occurrence:
+available fiscal years. For quarterly reports, it lists the exact stored Q1, Q2,
+and Q3 periods for each year; partial years remain selectable and export only the
+periods actually stored. It writes both the rendered report and every retrieved
+fact occurrence:
 
 ```text
 output/<TICKER>_<annual|quarterly>_<YEARS>.txt
