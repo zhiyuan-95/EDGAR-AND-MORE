@@ -8,9 +8,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, cast
 
 from sec_inline_financials.arelle_adapter import ArelleProcessor
+from sec_inline_financials.company_lineage import (
+    CompanyLineage,
+    RegistrantIdentity,
+    build_company_lineage,
+    normalize_cik,
+)
 from sec_inline_financials.config import load_sec_user_agent
 from sec_inline_financials.errors import DiscoveryError, ExplorerError, IngestionError
 from sec_inline_financials.evidence_ingestion import (
@@ -22,7 +28,7 @@ from sec_inline_financials.evidence_models import FilingOutcome, RunOutcome, Sto
 from sec_inline_financials.mapping_models import CompanyMappingResult
 from sec_inline_financials.mapping_service import DirectMappingService
 from sec_inline_financials.models import Company, Filing
-from sec_inline_financials.sec_client import SecClient
+from sec_inline_financials.sec_client import DiscoveredCompanyWindow, SecClient
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
@@ -35,6 +41,16 @@ IngestionStatus = Literal[
     "refresh_failed_using_local_data",
 ]
 _TICKER_PATTERN = re.compile(r"[A-Z0-9.-]{1,10}")
+
+
+class CompanySecGateway(SecGateway, Protocol):
+    def discover_company_window(
+        self,
+        lineage: CompanyLineage,
+        *,
+        annual_count: int,
+        quarterly_count: int,
+    ) -> DiscoveredCompanyWindow: ...
 
 
 @dataclass(frozen=True)
@@ -152,7 +168,7 @@ class CompanyIngestionService:
 
         try:
             self._progress(f"Checking SEC filings for {requested}...")
-            gateway = self._sec_gateway_factory()
+            gateway = cast(CompanySecGateway, self._sec_gateway_factory())
             company = gateway.resolve_company(requested)
             if previous is None:
                 previous = self._store.get_company_state_by_cik(company.cik)
@@ -164,8 +180,21 @@ class CompanyIngestionService:
                     f"Stored ticker {requested} belongs to CIK {previous.company.cik}, "
                     f"but SEC resolved it to {company.cik}."
                 )
-            annual = gateway.discover_annual_inline_filings(company, count=annual_count)
-            quarterly = gateway.discover_quarterly_inline_filings(company, count=quarterly_count)
+            lineage = self._store.load_company_lineage(company.cik)
+            if lineage is None:
+                lineage = build_company_lineage(
+                    company_id=0,
+                    canonical_current_cik=company.cik,
+                    members=(RegistrantIdentity(company.cik, company.name),),
+                    edges=(),
+                )
+            window = gateway.discover_company_window(
+                lineage,
+                annual_count=annual_count,
+                quarterly_count=quarterly_count,
+            )
+            annual = list(window.annual)
+            quarterly = list(window.quarterly)
         except DiscoveryError as exc:
             if previous is None or not previous.has_evidence:
                 raise
@@ -177,6 +206,71 @@ class CompanyIngestionService:
                 error=exc,
             )
 
+        return self._ingest_resolved_company(
+            company=company,
+            previous=previous,
+            gateway=gateway,
+            annual=annual,
+            quarterly=quarterly,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+            annual_due=annual_due,
+            quarterly_due=quarterly_due,
+            today=today,
+        )
+
+    def ingest_company_cik(
+        self,
+        successor_cik: str,
+        *,
+        annual_count: int = 5,
+        quarterly_count: int = 12,
+    ) -> CompanyIngestionResult:
+        """Ingest one already-stored company through its complete CIK lineage."""
+        normalized = normalize_cik(successor_cik)
+        if annual_count < 1 or quarterly_count < 1:
+            raise IngestionError("Annual and quarterly filing counts must both be positive.")
+        self._store.initialize()
+        previous = self._store.get_company_state_by_cik(normalized)
+        lineage = self._store.load_company_lineage(normalized)
+        if previous is None or lineage is None:
+            raise IngestionError(
+                f"Successor CIK {normalized} does not belong to a stored company lineage."
+            )
+        gateway = cast(CompanySecGateway, self._sec_gateway_factory())
+        window = gateway.discover_company_window(
+            lineage,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+        )
+        return self._ingest_resolved_company(
+            company=previous.company,
+            previous=previous,
+            gateway=gateway,
+            annual=list(window.annual),
+            quarterly=list(window.quarterly),
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+            annual_due=True,
+            quarterly_due=True,
+            today=self._today(),
+        )
+
+    def _ingest_resolved_company(
+        self,
+        *,
+        company: Company,
+        previous: StoredCompanyState | None,
+        gateway: SecGateway,
+        annual: list[Filing],
+        quarterly: list[Filing],
+        annual_count: int,
+        quarterly_count: int,
+        annual_due: bool,
+        quarterly_due: bool,
+        today: date,
+    ) -> CompanyIngestionResult:
+        """Process, publish, and map one already-resolved current-first filing window."""
         known_accessions = set(previous.known_accessions if previous is not None else ())
         selected = (*annual, *quarterly)
         coverage_warning = _coverage_warning(

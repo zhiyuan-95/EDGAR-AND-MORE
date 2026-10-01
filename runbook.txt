@@ -1,3 +1,5 @@
+xbrl json: https://data.sec.gov/api/xbrl/companyfacts/CIK0001222333.json
+
 #### Database location:
 C:\Users\johnk\SECInlineFinancials\data
 
@@ -13,4 +15,9 @@ uv run python tests\inspect_inline_ingestion.py
 #### Delete companies
 uv run --no-sync sec-inline-financials-purge msft aapl --execute
 
-https://data.sec.gov/api/xbrl/companyfacts/CIK0001222333.json
+#### lineage maintainance
+uv run --no-sync sec-inline-financials-lineage succession predecession
+
+xom : 0000034088 -> 0002115436
+DKNG: 0001772757 -> 0001883685
+CLMT: 0001340122 -> 0002013745

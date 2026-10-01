@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 import zlib
@@ -10,6 +11,14 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from sec_inline_financials.company_lineage import (
+    CompanyLineage,
+    LineageEdge,
+    LineagePatchPlan,
+    RegistrantIdentity,
+    build_company_lineage,
+    normalize_cik,
+)
 from sec_inline_financials.errors import (
     EvidenceStorageError,
     FilingMetadataError,
@@ -87,6 +96,7 @@ _RAW_PAYLOAD_INTERNAL_COLUMNS = (
     "raw_payload_compressed_byte_size",
     "raw_payload_compressed_bytes",
 )
+_DEI_NAMESPACE = re.compile(r"^https?://xbrl\.sec\.gov/dei/\d{4}/?$", re.IGNORECASE)
 
 
 def _now() -> str:
@@ -221,6 +231,62 @@ def _loaded_fact_dict(
     return result
 
 
+def _normalized_declared_cik(value: object) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    if not stripped.isdigit() or len(stripped) > 10:
+        return None
+    return stripped.zfill(10)
+
+
+def _snapshot_registrant_ciks(
+    connection: sqlite3.Connection,
+    snapshot_id: int,
+    company_cik: str,
+) -> tuple[str, ...]:
+    provenance = connection.execute(
+        "SELECT fp.registrant_cik FROM filing_provenance AS fp "
+        "JOIN evidence_snapshots AS s ON s.filing_id = fp.filing_id WHERE s.id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    registrants = {str(provenance["registrant_cik"])} if provenance is not None else set()
+    rows = connection.execute(
+        "SELECT c.namespace_uri, f.typed_value_text, f.raw_value_text "
+        "FROM facts AS f JOIN concepts AS c ON c.id = f.concept_id "
+        "WHERE f.snapshot_id = ? AND f.is_nil = 0 "
+        "AND c.local_name = 'EntityCentralIndexKey' "
+        "ORDER BY f.source_order",
+        (snapshot_id,),
+    ).fetchall()
+    registrants.update(
+        cik
+        for row in rows
+        if _DEI_NAMESPACE.fullmatch(str(row["namespace_uri"]).rstrip("/"))
+        if (
+            cik := _normalized_declared_cik(
+                row["typed_value_text"]
+                if row["typed_value_text"] is not None
+                else row["raw_value_text"]
+            )
+        )
+        is not None
+    )
+    canonical_cik = _normalized_declared_cik(company_cik)
+    if not registrants and canonical_cik is not None:
+        registrants.add(canonical_cik)
+    return tuple(sorted(registrants))
+
+
+def _snapshot_filing_registrant_cik(connection: sqlite3.Connection, snapshot_id: int) -> str | None:
+    row = connection.execute(
+        "SELECT fp.registrant_cik FROM filing_provenance AS fp "
+        "JOIN evidence_snapshots AS s ON s.filing_id = fp.filing_id WHERE s.id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    return str(row["registrant_cik"]) if row is not None else None
+
+
 class EvidenceStore:
     """Deep module for transactional evidence persistence and bounded retrieval."""
 
@@ -314,13 +380,128 @@ class EvidenceStore:
 
     def get_company_state_by_cik(self, cik: str) -> StoredCompanyState | None:
         """Resolve prior state when an SEC ticker symbol has changed."""
+        normalized = normalize_cik(cik)
         with self.database.connection() as connection:
             row = connection.execute(
-                "SELECT ticker FROM companies WHERE cik = ?", (cik,)
+                "SELECT c.ticker FROM company_ciks AS cc "
+                "JOIN companies AS c ON c.id = cc.company_id WHERE cc.cik = ?",
+                (normalized,),
             ).fetchone()
         if row is None or row["ticker"] is None:
             return None
         return self.get_company_state(str(row["ticker"]))
+
+    def load_company_lineage(self, cik: str) -> CompanyLineage | None:
+        """Load and validate the complete stored lineage containing ``cik``."""
+        normalized = normalize_cik(cik)
+        with self.database.connection() as connection:
+            return self._load_company_lineage(connection, normalized)
+
+    def apply_lineage_patch(self, plan: LineagePatchPlan) -> Literal["created", "already_present"]:
+        """Apply an approved exact edge after transactionally revalidating its preview."""
+        with self.database.write_transaction() as connection:
+            current = self._load_company_lineage(connection, plan.successor.cik)
+            if current is None or current.company_id != plan.company_id:
+                raise FilingMetadataError("The previewed company lineage no longer exists.")
+            if current.state_hash != plan.expected_state_hash:
+                raise FilingMetadataError("The company lineage changed after preview; retry.")
+            exact_edge = LineageEdge(plan.predecessor.cik, plan.successor.cik)
+            if exact_edge in current.edges:
+                connection.execute(
+                    "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                    "WHERE company_id = ? AND cik = ?",
+                    (plan.successor.legal_name, _now(), plan.company_id, plan.successor.cik),
+                )
+                connection.execute(
+                    "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                    "WHERE company_id = ? AND cik = ?",
+                    (plan.predecessor.legal_name, _now(), plan.company_id, plan.predecessor.cik),
+                )
+                if plan.successor.cik == current.canonical_current_cik:
+                    connection.execute(
+                        "UPDATE companies SET current_name = ?, updated_at = ? WHERE id = ?",
+                        (plan.successor.legal_name, _now(), plan.company_id),
+                    )
+                return "already_present"
+            if current.current_to_oldest[-1].cik != plan.successor.cik:
+                raise FilingMetadataError(
+                    "The supplied successor is no longer the oldest lineage member."
+                )
+            owner = connection.execute(
+                "SELECT company_id FROM company_ciks WHERE cik = ?",
+                (plan.predecessor.cik,),
+            ).fetchone()
+            if owner is not None:
+                raise FilingMetadataError(
+                    f"CIK {plan.predecessor.cik} is already associated with a company."
+                )
+            now = _now()
+            connection.execute(
+                "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                "WHERE company_id = ? AND cik = ?",
+                (plan.successor.legal_name, now, plan.company_id, plan.successor.cik),
+            )
+            if plan.successor.cik == current.canonical_current_cik:
+                connection.execute(
+                    "UPDATE companies SET current_name = ?, updated_at = ? WHERE id = ?",
+                    (plan.successor.legal_name, now, plan.company_id),
+                )
+            connection.execute(
+                "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    plan.company_id,
+                    plan.predecessor.cik,
+                    plan.predecessor.legal_name,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO company_cik_transitions("
+                "company_id, predecessor_cik, successor_cik, created_at"
+                ") VALUES (?, ?, ?, ?)",
+                (plan.company_id, plan.predecessor.cik, plan.successor.cik, now),
+            )
+            applied = self._load_company_lineage(connection, plan.successor.cik)
+            if applied is None or applied.state_hash != plan.after.state_hash:
+                raise FilingMetadataError("Applied lineage does not match the approved preview.")
+            return "created"
+
+    @staticmethod
+    def _load_company_lineage(connection: sqlite3.Connection, cik: str) -> CompanyLineage | None:
+        owner = connection.execute(
+            "SELECT c.id, c.cik FROM company_ciks AS cc "
+            "JOIN companies AS c ON c.id = cc.company_id WHERE cc.cik = ?",
+            (cik,),
+        ).fetchone()
+        if owner is None:
+            return None
+        company_id = int(owner["id"])
+        members = tuple(
+            RegistrantIdentity(cik=str(row["cik"]), legal_name=str(row["legal_name"]))
+            for row in connection.execute(
+                "SELECT cik, legal_name FROM company_ciks WHERE company_id = ? ORDER BY cik",
+                (company_id,),
+            )
+        )
+        edges = tuple(
+            LineageEdge(
+                predecessor_cik=str(row["predecessor_cik"]),
+                successor_cik=str(row["successor_cik"]),
+            )
+            for row in connection.execute(
+                "SELECT predecessor_cik, successor_cik FROM company_cik_transitions "
+                "WHERE company_id = ? ORDER BY successor_cik, predecessor_cik",
+                (company_id,),
+            )
+        )
+        return build_company_lineage(
+            company_id=company_id,
+            canonical_current_cik=str(owner["cik"]),
+            members=members,
+            edges=edges,
+        )
 
     def publish_filing_window(
         self,
@@ -353,25 +534,6 @@ class EvidenceStore:
                 filing.accession: self._upsert_filing(connection, company_id, filing)
                 for filing in (*annual, *quarterly)
             }
-            connection.execute(
-                "UPDATE filings SET is_active = 0, active_window_rank = NULL WHERE company_id = ?",
-                (company_id,),
-            )
-            for rank, filing in enumerate(annual, start=1):
-                connection.execute(
-                    "UPDATE filings SET is_active = 1, active_window_rank = ? WHERE id = ?",
-                    (rank, filing_ids[filing.accession]),
-                )
-            for rank, filing in enumerate(quarterly, start=1):
-                connection.execute(
-                    "UPDATE filings SET is_active = 1, active_window_rank = ? WHERE id = ?",
-                    (rank, filing_ids[filing.accession]),
-                )
-            connection.execute(
-                "DELETE FROM active_filing_snapshots WHERE filing_id IN "
-                "(SELECT id FROM filings WHERE company_id = ?)",
-                (company_id,),
-            )
             for accession, snapshot_id in bindings.items():
                 filing_id = filing_ids[accession]
                 snapshot = connection.execute(
@@ -382,11 +544,73 @@ class EvidenceStore:
                     raise FilingMetadataError(
                         f"Snapshot {snapshot_id} does not belong to accession {accession}."
                     )
-                connection.execute(
-                    "INSERT INTO active_filing_snapshots(filing_id, snapshot_id, published_at) "
-                    "VALUES (?, ?, ?)",
-                    (filing_id, snapshot_id, _now()),
+
+            # Annual and quarterly publication are independent. Only filings with
+            # successful snapshot bindings can strengthen the exposed window.
+            for form, discovered in (("10-K", annual), ("10-Q", quarterly)):
+                candidate = [filing for filing in discovered if filing.accession in bindings]
+                candidate.sort(
+                    key=lambda filing: (
+                        filing.report_date,
+                        filing.filing_date,
+                        filing.accession,
+                    ),
+                    reverse=True,
                 )
+                stored_rows = connection.execute(
+                    "SELECT f.accession, f.report_date, f.filing_date "
+                    "FROM filings AS f JOIN active_filing_snapshots AS afs "
+                    "ON afs.filing_id = f.id WHERE f.company_id = ? AND f.form = ? "
+                    "AND f.is_active = 1 ORDER BY f.report_date DESC, f.filing_date DESC, "
+                    "f.accession DESC",
+                    (company_id, form),
+                ).fetchall()
+                candidate_score = (
+                    len(candidate),
+                    tuple(
+                        (
+                            filing.report_date.isoformat(),
+                            filing.filing_date.isoformat(),
+                            filing.accession,
+                        )
+                        for filing in candidate
+                    ),
+                )
+                stored_score = (
+                    len(stored_rows),
+                    tuple(
+                        (
+                            str(row["report_date"]),
+                            str(row["filing_date"]),
+                            str(row["accession"]),
+                        )
+                        for row in stored_rows
+                    ),
+                )
+                if not candidate or candidate_score <= stored_score:
+                    continue
+                connection.execute(
+                    "DELETE FROM active_filing_snapshots WHERE filing_id IN "
+                    "(SELECT id FROM filings WHERE company_id = ? AND form = ?)",
+                    (company_id, form),
+                )
+                connection.execute(
+                    "UPDATE filings SET is_active = 0, active_window_rank = NULL "
+                    "WHERE company_id = ? AND form = ?",
+                    (company_id, form),
+                )
+                for rank, filing in enumerate(candidate, start=1):
+                    filing_id = filing_ids[filing.accession]
+                    connection.execute(
+                        "UPDATE filings SET is_active = 1, active_window_rank = ? WHERE id = ?",
+                        (rank, filing_id),
+                    )
+                    connection.execute(
+                        "INSERT INTO active_filing_snapshots("
+                        "filing_id, snapshot_id, published_at"
+                        ") VALUES (?, ?, ?)",
+                        (filing_id, bindings[filing.accession], _now()),
+                    )
             connection.execute(
                 "UPDATE companies SET latest_10k_filing_date = ?, "
                 "latest_10q_filing_date = ?, next_check_date_10k = ?, "
@@ -460,6 +684,10 @@ class EvidenceStore:
                         report_evaluation_id=int(row["report_evaluation_id"]),
                         source_report_rule_version=str(row["rule_version"]),
                         company_cik=str(company["cik"]),
+                        registrant_cik=_snapshot_filing_registrant_cik(connection, snapshot_id),
+                        registrant_ciks=_snapshot_registrant_ciks(
+                            connection, snapshot_id, str(company["cik"])
+                        ),
                     )
                 )
             return tuple(result)
@@ -1066,7 +1294,7 @@ class EvidenceStore:
                 return StoreResult(snapshot_id=snapshot_id, disposition="reused")
 
             metadata = {
-                "version": "filing-metadata-v1",
+                "version": "filing-metadata-v2",
                 "accession": bundle.filing.accession,
                 "filing_date": bundle.filing.filing_date,
                 "report_date": bundle.filing.report_date,
@@ -1074,6 +1302,8 @@ class EvidenceStore:
                 "primary_document": bundle.filing.primary_document,
                 "source_url": bundle.filing.url,
                 "company_cik": bundle.company.cik,
+                "registrant_cik": bundle.filing.registrant_cik,
+                "archive_owner_cik": bundle.filing.archive_owner_cik,
             }
             cursor = connection.execute(
                 "INSERT INTO evidence_snapshots("
@@ -1121,9 +1351,11 @@ class EvidenceStore:
         with self.database.connection() as connection:
             snapshot = connection.execute(
                 "SELECT s.*, f.accession, f.form, f.filing_date, f.report_date, "
-                "f.primary_document, f.source_url, c.cik "
+                "f.primary_document, f.source_url, c.cik, "
+                "fp.registrant_cik, fp.archive_owner_cik "
                 "FROM evidence_snapshots AS s "
                 "JOIN filings AS f ON f.id = s.filing_id "
+                "JOIN filing_provenance AS fp ON fp.filing_id = f.id "
                 "JOIN companies AS c ON c.id = f.company_id WHERE s.id = ?",
                 (snapshot_id,),
             ).fetchone()
@@ -1154,6 +1386,8 @@ class EvidenceStore:
                 form=str(snapshot["form"]),
                 primary_document=str(snapshot["primary_document"]),
                 url=str(snapshot["source_url"]),
+                registrant_cik=str(snapshot["registrant_cik"]),
+                archive_owner_cik=str(snapshot["archive_owner_cik"]),
             )
             return FilingEvidenceBundle(
                 company=company,
@@ -1565,9 +1799,10 @@ class EvidenceStore:
                     f"Snapshot {row['snapshot_id']} has no {report_kind} "
                     f"{report_rule_version} evaluation."
                 )
+            snapshot_id = int(row["snapshot_id"])
             result.append(
                 MappingSnapshotInput(
-                    snapshot_id=int(row["snapshot_id"]),
+                    snapshot_id=snapshot_id,
                     filing_id=int(row["filing_id"]),
                     accession=str(row["accession"]),
                     form=str(row["form"]),
@@ -1577,6 +1812,10 @@ class EvidenceStore:
                     report_evaluation_id=int(row["report_evaluation_id"]),
                     source_report_rule_version=str(row["rule_version"]),
                     company_cik=str(company["cik"]),
+                    registrant_cik=_snapshot_filing_registrant_cik(connection, snapshot_id),
+                    registrant_ciks=_snapshot_registrant_ciks(
+                        connection, snapshot_id, str(company["cik"])
+                    ),
                 )
             )
         return tuple(result)
@@ -1733,18 +1972,44 @@ class EvidenceStore:
                 "VALUES (?, ?, ?, ?, ?)",
                 (company.cik, company.ticker or None, company.name, now, now),
             )
-            return _last_row_id(cursor)
+            company_id = _last_row_id(cursor)
+            connection.execute(
+                "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (company_id, company.cik, company.name, now, now),
+            )
+            return company_id
         company_id = int(row["id"])
         connection.execute(
             "UPDATE companies SET ticker = ?, current_name = ?, updated_at = ? WHERE id = ?",
             (company.ticker or None, company.name, now, company_id),
         )
+        connection.execute(
+            "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(company_id, cik) DO UPDATE SET legal_name = excluded.legal_name, "
+            "updated_at = excluded.updated_at",
+            (company_id, company.cik, company.name, now, now),
+        )
         return company_id
 
     @staticmethod
     def _upsert_filing(connection: sqlite3.Connection, company_id: int, filing: Filing) -> int:
+        registrant_cik = normalize_cik(filing.registrant_cik)
+        archive_owner_cik = normalize_cik(filing.archive_owner_cik)
+        owned_count = connection.execute(
+            "SELECT count(*) FROM company_ciks WHERE company_id = ? AND cik IN (?, ?)",
+            (company_id, registrant_cik, archive_owner_cik),
+        ).fetchone()
+        expected_count = len({registrant_cik, archive_owner_cik})
+        if owned_count is None or int(owned_count[0]) != expected_count:
+            raise FilingMetadataError(
+                "Filing registrant and archive owner must belong to the canonical company lineage."
+            )
         row = connection.execute(
-            "SELECT * FROM filings WHERE accession = ?", (filing.accession,)
+            "SELECT f.*, fp.registrant_cik, fp.archive_owner_cik FROM filings AS f "
+            "LEFT JOIN filing_provenance AS fp ON fp.filing_id = f.id WHERE f.accession = ?",
+            (filing.accession,),
         ).fetchone()
         values = (
             company_id,
@@ -1753,14 +2018,23 @@ class EvidenceStore:
             filing.report_date.isoformat(),
             filing.primary_document,
             filing.url,
+            registrant_cik,
+            archive_owner_cik,
         )
         if row is None:
             cursor = connection.execute(
                 "INSERT INTO filings(company_id, accession, form, filing_date, report_date, "
                 "primary_document, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (company_id, filing.accession, *values[1:]),
+                (company_id, filing.accession, *values[1:6]),
             )
-            return _last_row_id(cursor)
+            filing_id = _last_row_id(cursor)
+            connection.execute(
+                "INSERT INTO filing_provenance("
+                "filing_id, registrant_cik, archive_owner_cik, recorded_at"
+                ") VALUES (?, ?, ?, ?)",
+                (filing_id, registrant_cik, archive_owner_cik, _now()),
+            )
+            return filing_id
         existing = (
             int(row["company_id"]),
             str(row["form"]),
@@ -1768,6 +2042,8 @@ class EvidenceStore:
             str(row["report_date"]),
             str(row["primary_document"]),
             str(row["source_url"]),
+            str(row["registrant_cik"]),
+            str(row["archive_owner_cik"]),
         )
         if existing != values:
             raise FilingMetadataError(

@@ -1,14 +1,14 @@
 # Preview one company
-#uv run --no-sync sec-inline-financials-purge AAPL
+# uv run --no-sync sec-inline-financials-purge AAPL
 
 # Preview a set
-#uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA
+# uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA
 
 # Permanently execute
-#uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA --execute
+# uv run --no-sync sec-inline-financials-purge AAPL MSFT NVDA --execute
 
 # Retry files previously locked by Windows
-#uv run --no-sync sec-inline-financials-purge --cleanup-pending
+# uv run --no-sync sec-inline-financials-purge --cleanup-pending
 
 
 from __future__ import annotations

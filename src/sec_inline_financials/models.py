@@ -20,6 +20,8 @@ class Filing:
     form: str
     primary_document: str
     url: str
+    registrant_cik: str
+    archive_owner_cik: str
 
 
 @dataclass(frozen=True)
