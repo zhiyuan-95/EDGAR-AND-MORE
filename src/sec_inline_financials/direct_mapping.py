@@ -196,11 +196,13 @@ def _compatibility_failures(
         failures.append("concept_period_type_mismatch")
     if fact.context_period_kind != expected_period_type:
         failures.append("context_period_type_mismatch")
-    registrant_ciks = (
-        (snapshot.registrant_cik,)
-        if snapshot.registrant_cik is not None
-        else snapshot.registrant_ciks or (snapshot.company_cik,)
-    )
+    registrant_ciks = snapshot.registrant_ciks
+    if not registrant_ciks:
+        registrant_ciks = (
+            (snapshot.registrant_cik,)
+            if snapshot.registrant_cik is not None
+            else (snapshot.company_cik,)
+        )
     normalized_registrants = {
         normalized for cik in registrant_ciks if (normalized := _normalize_cik(cik)) is not None
     }

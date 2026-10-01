@@ -5,7 +5,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sec_inline_financials.evidence_classification import classify_report
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION, classify_report
 from sec_inline_financials.evidence_models import (
     ExtractionProfile,
     FilingEvidenceBundle,
@@ -137,12 +137,17 @@ class EvidenceIngestionService:
             )
             if reusable is not None:
                 stored_evaluation = self._store.get_report_evaluation(
-                    reusable.snapshot_id, report_kind, "report-v1"
+                    reusable.snapshot_id, report_kind, REPORT_RULE_VERSION
                 )
                 if stored_evaluation is None:
                     bundle = self._store.load_snapshot(reusable.snapshot_id)
                     self._store.save_report_evaluation(
-                        reusable.snapshot_id, classify_report(bundle, report_kind)
+                        reusable.snapshot_id,
+                        classify_report(
+                            bundle,
+                            report_kind,
+                            transition=self._store.reporting_transition_for_filing(bundle.filing),
+                        ),
                     )
                 self._store.mark_attempt_reused(attempt_id, reusable.snapshot_id)
                 return FilingOutcome(
@@ -155,7 +160,11 @@ class EvidenceIngestionService:
             bundle = self._processor.extract_evidence(company, filing, capture_area)
             if extraction_profile_hash(bundle) != profile_hash:
                 raise ValueError("Processor extraction profile changed during one filing attempt.")
-            evaluation = classify_report(bundle, report_kind)
+            evaluation = classify_report(
+                bundle,
+                report_kind,
+                transition=self._store.reporting_transition_for_filing(bundle.filing),
+            )
             installed = self._install_bundle_artifacts(bundle, attempt_identity=attempt_identity)
             result = self._store.save_snapshot(bundle, evaluation, attempt_id, installed)
             self._store.artifacts.cleanup_staging(attempt_identity)

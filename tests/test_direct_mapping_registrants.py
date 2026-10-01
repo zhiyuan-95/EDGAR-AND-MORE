@@ -87,17 +87,17 @@ def test_direct_mapping_rejects_fact_for_undeclared_entity() -> None:
     ]
 
 
-def test_explicit_filing_registrant_is_authoritative_for_lineage_mapping() -> None:
+def test_complete_declared_registrant_set_is_authoritative_for_lineage_mapping() -> None:
     snapshot = replace(
         _snapshot(("0000034088", "0002115436")),
-        registrant_cik="0000034088",
+        registrant_cik="0002115436",
     )
 
     predecessor = _resolve_revenue(snapshot, _revenue_fact(snapshot, "0000034088"))
     canonical_current = _resolve_revenue(snapshot, _revenue_fact(snapshot, "0002115436"))
 
     assert predecessor.status == "reported"
-    assert canonical_current.status == "missing"
+    assert canonical_current.status == "reported"
 
 
 def test_active_window_hash_includes_declared_registrants() -> None:
@@ -105,6 +105,46 @@ def test_active_window_hash_includes_declared_registrants() -> None:
     expanded = replace(snapshot, registrant_ciks=("0000034088", "0002115436"))
 
     assert active_window_hash((snapshot,)) != active_window_hash((expanded,))
+
+
+def test_partners_capital_is_supported_as_equity() -> None:
+    snapshot = replace(
+        _snapshot(("0001340122", "0002013745")),
+        accession="0002013745-24-000011",
+        report_date=date(2024, 6, 30),
+        company_cik="0002013745",
+        registrant_cik="0002013745",
+    )
+    fact = MappingFactInput(
+        snapshot_id=snapshot.snapshot_id,
+        fact_id=24,
+        concept=ConceptIdentity(
+            namespace_family="us-gaap",
+            namespace_uri="http://fasb.org/us-gaap/2024",
+            local_name="PartnersCapital",
+            display_qname="us-gaap:PartnersCapital",
+        ),
+        concept_period_type="instant",
+        context_period_kind="instant",
+        entity_identifier="0002013745",
+        period_start_date=None,
+        period_end_date=snapshot.report_date,
+        unit_family="monetary",
+        typed_value_text="-320800000",
+        evidence_role="selected_primary",
+    )
+
+    evaluation = resolve_metric_window(
+        rule_set=DIRECT_MAPPING_RULES,
+        report_kind="quarterly",
+        snapshots=(snapshot,),
+        observed_concepts=frozenset({fact.concept}),
+        candidate_facts=(fact,),
+    )
+    equity = next(result for result in evaluation.results if result.metric_key == "equity")
+
+    assert equity.status == "reported"
+    assert equity.selected_fact_id == fact.fact_id
 
 
 def test_mapping_inputs_load_dei_declared_registrants(tmp_path: Path) -> None:
@@ -120,6 +160,15 @@ def test_mapping_inputs_load_dei_declared_registrants(tmp_path: Path) -> None:
         connection.execute(
             "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
             "VALUES (1, '0002115436', 'Exxon Mobil Corporation', 'now', 'now')"
+        )
+        connection.execute(
+            "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
+            "VALUES (1, '0000034088', 'Exxon Mobil Corporation predecessor', 'now', 'now')"
+        )
+        connection.execute(
+            "INSERT INTO company_cik_transitions("
+            "company_id, predecessor_cik, successor_cik, effective_date, created_at"
+            ") VALUES (1, '0000034088', '0002115436', '2026-07-01', 'now')"
         )
         connection.execute(
             "INSERT INTO filings(id, company_id, accession, form, filing_date, report_date, "
@@ -172,7 +221,7 @@ def test_mapping_inputs_load_dei_declared_registrants(tmp_path: Path) -> None:
             "VALUES (1, 1, '{http://xbrl.sec.gov/dei/2026}EntityCentralIndexKey', "
             "'dei:EntityCentralIndexKey', 'defined')"
         )
-        for source_order, registrant_cik in enumerate(("0000034088", "0002115436")):
+        for source_order, registrant_cik in enumerate(("0000034088", "0002115436", "0009999999")):
             connection.execute(
                 "INSERT INTO facts(id, snapshot_id, observation_key, source_order, "
                 "observation_origin, fact_kind, source_locator, is_nil, validity_name, "

@@ -16,6 +16,7 @@ from sec_inline_financials.company_lineage import (
     LineageEdge,
     LineagePatchPlan,
     RegistrantIdentity,
+    ReportingTransition,
     build_company_lineage,
     normalize_cik,
 )
@@ -245,12 +246,24 @@ def _snapshot_registrant_ciks(
     snapshot_id: int,
     company_cik: str,
 ) -> tuple[str, ...]:
+    allowed_rows = connection.execute(
+        "SELECT cc.cik FROM evidence_snapshots AS s "
+        "JOIN filings AS f ON f.id = s.filing_id "
+        "JOIN company_ciks AS cc ON cc.company_id = f.company_id "
+        "WHERE s.id = ?",
+        (snapshot_id,),
+    ).fetchall()
+    allowed = {str(row["cik"]) for row in allowed_rows}
     provenance = connection.execute(
         "SELECT fp.registrant_cik FROM filing_provenance AS fp "
         "JOIN evidence_snapshots AS s ON s.filing_id = fp.filing_id WHERE s.id = ?",
         (snapshot_id,),
     ).fetchone()
-    registrants = {str(provenance["registrant_cik"])} if provenance is not None else set()
+    registrants: set[str] = set()
+    if provenance is not None:
+        provenance_cik = _normalized_declared_cik(provenance["registrant_cik"])
+        if provenance_cik in allowed:
+            registrants.add(provenance_cik)
     rows = connection.execute(
         "SELECT c.namespace_uri, f.typed_value_text, f.raw_value_text "
         "FROM facts AS f JOIN concepts AS c ON c.id = f.concept_id "
@@ -271,6 +284,7 @@ def _snapshot_registrant_ciks(
             )
         )
         is not None
+        and cik in allowed
     )
     canonical_cik = _normalized_declared_cik(company_cik)
     if not registrants and canonical_cik is not None:
@@ -397,7 +411,9 @@ class EvidenceStore:
         with self.database.connection() as connection:
             return self._load_company_lineage(connection, normalized)
 
-    def apply_lineage_patch(self, plan: LineagePatchPlan) -> Literal["created", "already_present"]:
+    def apply_lineage_patch(
+        self, plan: LineagePatchPlan
+    ) -> Literal["created", "updated", "already_present"]:
         """Apply an approved exact edge after transactionally revalidating its preview."""
         with self.database.write_transaction() as connection:
             current = self._load_company_lineage(connection, plan.successor.cik)
@@ -405,8 +421,27 @@ class EvidenceStore:
                 raise FilingMetadataError("The previewed company lineage no longer exists.")
             if current.state_hash != plan.expected_state_hash:
                 raise FilingMetadataError("The company lineage changed after preview; retry.")
-            exact_edge = LineageEdge(plan.predecessor.cik, plan.successor.cik)
-            if exact_edge in current.edges:
+            current_edge = next(
+                (
+                    edge
+                    for edge in current.edges
+                    if edge.predecessor_cik == plan.predecessor.cik
+                    and edge.successor_cik == plan.successor.cik
+                ),
+                None,
+            )
+            approved_edge = next(
+                (
+                    edge
+                    for edge in plan.after.edges
+                    if edge.predecessor_cik == plan.predecessor.cik
+                    and edge.successor_cik == plan.successor.cik
+                ),
+                None,
+            )
+            if current_edge is not None:
+                if approved_edge is None:
+                    raise FilingMetadataError("The approved preview omits the existing edge.")
                 connection.execute(
                     "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
                     "WHERE company_id = ? AND cik = ?",
@@ -422,6 +457,25 @@ class EvidenceStore:
                         "UPDATE companies SET current_name = ?, updated_at = ? WHERE id = ?",
                         (plan.successor.legal_name, _now(), plan.company_id),
                     )
+                if current_edge.effective_date != approved_edge.effective_date:
+                    connection.execute(
+                        "UPDATE company_cik_transitions SET effective_date = ? "
+                        "WHERE company_id = ? AND predecessor_cik = ? AND successor_cik = ?",
+                        (
+                            approved_edge.effective_date.isoformat()
+                            if approved_edge.effective_date is not None
+                            else None,
+                            plan.company_id,
+                            plan.predecessor.cik,
+                            plan.successor.cik,
+                        ),
+                    )
+                    applied = self._load_company_lineage(connection, plan.successor.cik)
+                    if applied is None or applied.state_hash != plan.after.state_hash:
+                        raise FilingMetadataError(
+                            "Applied lineage does not match the approved preview."
+                        )
+                    return "updated"
                 return "already_present"
             if current.current_to_oldest[-1].cik != plan.successor.cik:
                 raise FilingMetadataError(
@@ -459,9 +513,17 @@ class EvidenceStore:
             )
             connection.execute(
                 "INSERT INTO company_cik_transitions("
-                "company_id, predecessor_cik, successor_cik, created_at"
-                ") VALUES (?, ?, ?, ?)",
-                (plan.company_id, plan.predecessor.cik, plan.successor.cik, now),
+                "company_id, predecessor_cik, successor_cik, created_at, effective_date"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (
+                    plan.company_id,
+                    plan.predecessor.cik,
+                    plan.successor.cik,
+                    now,
+                    approved_edge.effective_date.isoformat()
+                    if approved_edge is not None and approved_edge.effective_date is not None
+                    else None,
+                ),
             )
             applied = self._load_company_lineage(connection, plan.successor.cik)
             if applied is None or applied.state_hash != plan.after.state_hash:
@@ -489,9 +551,11 @@ class EvidenceStore:
             LineageEdge(
                 predecessor_cik=str(row["predecessor_cik"]),
                 successor_cik=str(row["successor_cik"]),
+                effective_date=_optional_date(row["effective_date"]),
             )
             for row in connection.execute(
-                "SELECT predecessor_cik, successor_cik FROM company_cik_transitions "
+                "SELECT predecessor_cik, successor_cik, effective_date "
+                "FROM company_cik_transitions "
                 "WHERE company_id = ? ORDER BY successor_cik, predecessor_cik",
                 (company_id,),
             )
@@ -501,6 +565,40 @@ class EvidenceStore:
             canonical_current_cik=str(owner["cik"]),
             members=members,
             edges=edges,
+        )
+
+    def reporting_transition_for_filing(self, filing: Filing) -> ReportingTransition | None:
+        """Return the verified predecessor when a successor files a pre-transition period."""
+        registrant_cik = _normalized_declared_cik(filing.registrant_cik)
+        if registrant_cik is None:
+            return None
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT p.cik AS predecessor_cik, p.legal_name AS predecessor_name, "
+                "s.cik AS successor_cik, s.legal_name AS successor_name, t.effective_date "
+                "FROM company_cik_transitions AS t "
+                "JOIN company_ciks AS p ON p.company_id = t.company_id "
+                "AND p.cik = t.predecessor_cik "
+                "JOIN company_ciks AS s ON s.company_id = t.company_id "
+                "AND s.cik = t.successor_cik "
+                "WHERE t.successor_cik = ? AND t.effective_date IS NOT NULL",
+                (registrant_cik,),
+            ).fetchone()
+        if row is None:
+            return None
+        effective_date = date.fromisoformat(str(row["effective_date"]))
+        if filing.report_date >= effective_date:
+            return None
+        return ReportingTransition(
+            predecessor=RegistrantIdentity(
+                cik=str(row["predecessor_cik"]),
+                legal_name=str(row["predecessor_name"]),
+            ),
+            successor=RegistrantIdentity(
+                cik=str(row["successor_cik"]),
+                legal_name=str(row["successor_name"]),
+            ),
+            effective_date=effective_date,
         )
 
     def publish_filing_window(

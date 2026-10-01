@@ -24,7 +24,7 @@ metrics and a local frontend with evidence downloads and mapping review.
 | On-demand filing refresh and historical evidence retention | Implemented; new-accession live acceptance remains |
 | Frontend and evidence downloads | Planned |
 
-Reports are generated only from stored snapshots and their persisted `report-v1`
+Reports are generated only from stored snapshots and their persisted `report-v2`
 evaluations. The interactive script in `tests/inspect_inline_ingestion.py` does not
 contact the SEC or open Arelle. The two ingestion commands also evaluate or reuse
 Direct Mapping after evidence publication; `sec-inline-financials` adds elapsed
@@ -70,7 +70,7 @@ Ingestion and update workflows do not generate reports automatically.
 ```text
 Implemented:
 SEC filings -> Arelle extraction -> retained files + SQLite evidence
-    -> report-v1 classification -> Direct Mapping -> published metric evaluations
+    -> report-v2 classification -> Direct Mapping -> published metric evaluations
 
 Planned:
 unresolved metric -> target-specific evidence packet -> LLM recommendation
@@ -81,9 +81,16 @@ The project covers **seven metrics**: Revenue, Operating Income, Net Income,
 Total Assets, Total Liabilities, Equity, and Operating Cash Flow.
 
 [mapping.txt](docs/mapping.txt) remains the readable source list and parity benchmark.
-Runtime code uses the frozen `direct-mapping-v1` rules and the
+Runtime code uses the versioned `direct-mapping-v2` rules and the
 `target-metrics-v1` definitions. Mapping is evaluated separately for each company,
 report kind, Target Metric, and exact period.
+
+`report-v2` is transition-aware. When a verified predecessor-to-successor edge has
+an effective date, a successor-filed report for an earlier period accepts facts
+whose context names the predecessor CIK. It can also remove one exact DEI
+`LegalEntityAxis` wrapper when its explicit member matches the verified predecessor
+legal name; any remaining business dimensions stay dimensional. The prior
+`report-v1` decisions remain immutable and available for audit.
 
 - Evaluate mappings separately for every annual or filed-quarter period.
 - Keep a valid reported **zero**. Zero does not mean missing or trigger fallback.
@@ -233,6 +240,17 @@ accession returns `updated`. If an SEC refresh fails for a company with stored
 evidence, the command returns `refresh_failed_using_local_data` and leaves the
 published local window unchanged.
 
+Record an operator-verified predecessor edge with its legal transition date:
+
+```powershell
+uv run --no-sync sec-inline-financials-lineage <SUCCESSOR_CIK> <PREDECESSOR_CIK> `
+  --effective-date YYYY-MM-DD
+```
+
+The date is immutable after it is set. It controls period-based transition
+classification; it is not inferred from filing date, ticker, or company-name
+similarity.
+
 Evaluate or reuse Direct Mapping from the published local evidence window:
 
 ```powershell
@@ -240,7 +258,7 @@ uv run --no-sync sec-inline-financials-map AAPL
 ```
 
 This command requires a complete active 5/12 window with exact snapshot bindings
-and persisted `report-v1` evaluations. It prints annual and quarterly evaluation
+and persisted `report-v2` evaluations. It prints annual and quarterly evaluation
 IDs plus reported/missing counts. It does not require `SEC_USER_AGENT`, contact the
 SEC, open Arelle, call an LLM, or create TXT/JSON reports.
 
@@ -286,7 +304,7 @@ output/<TICKER>_<annual|quarterly>_<YEARS>_all_facts.json
 ```
 
 Report generation reads SQLite only. It uses the newest stored snapshot for each
-selected annual year or quarter and fails explicitly when the required `report-v1`
+selected annual year or quarter and fails explicitly when the required `report-v2`
 evaluation is absent.
 
 Inspect selected 10-K or 10-Q narrative sections across stored periods:

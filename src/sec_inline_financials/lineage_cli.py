@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Callable, Sequence
+from datetime import date
 
 from sec_inline_financials.arelle_adapter import ArelleProcessor
 from sec_inline_financials.company_ingestion import CompanyIngestionService, IngestionSettings
@@ -17,6 +18,13 @@ from sec_inline_financials.storage.evidence_store import EvidenceStore
 
 InputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
+
+
+def _iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected an ISO date in YYYY-MM-DD form") from exc
 
 
 def _render_plan(plan: LineagePatchPlan, output_fn: OutputFn) -> None:
@@ -34,6 +42,13 @@ def _render_plan(plan: LineagePatchPlan, output_fn: OutputFn) -> None:
     output_fn("       ->")
     output_fn(f"  {plan.successor.cik}  {plan.successor.legal_name}")
     output_fn(f"  {plan.predecessor.cik} -> {plan.successor.cik}")
+    edge = next(
+        edge
+        for edge in plan.after.edges
+        if edge.predecessor_cik == plan.predecessor.cik and edge.successor_cik == plan.successor.cik
+    )
+    if edge.effective_date is not None:
+        output_fn(f"  Effective date: {edge.effective_date.isoformat()}")
     output_fn("  Status: already present" if plan.already_present else "  Status: new edge")
 
 
@@ -42,11 +57,16 @@ def run_lineage_command(
     successor_cik: str,
     predecessor_cik: str,
     *,
+    effective_date: date | None = None,
     input_fn: InputFn = input,
     output_fn: OutputFn = print,
 ) -> int:
     try:
-        plan = service.preview_link(successor_cik, predecessor_cik)
+        plan = service.preview_link(
+            successor_cik,
+            predecessor_cik,
+            effective_date=effective_date,
+        )
         _render_plan(plan, output_fn)
         while True:
             try:
@@ -99,6 +119,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("successor_cik")
     parser.add_argument("predecessor_cik")
+    parser.add_argument(
+        "--effective-date",
+        type=_iso_date,
+        help="verified legal transition date (YYYY-MM-DD)",
+    )
     args = parser.parse_args(argv)
     try:
         successor_cik = normalize_cik(args.successor_cik)
@@ -125,7 +150,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 quarterly_count=settings.quarterly_count,
             ),
         )
-        return run_lineage_command(service, successor_cik, predecessor_cik)
+        return run_lineage_command(
+            service,
+            successor_cik,
+            predecessor_cik,
+            effective_date=args.effective_date,
+        )
     except ExplorerError as exc:
         print(f"Error: {exc}")
         return 1

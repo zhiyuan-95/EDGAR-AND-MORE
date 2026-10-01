@@ -8,7 +8,7 @@ from sec_inline_financials.mapping_models import (
     MetricRule,
 )
 
-DIRECT_MAPPING_RULE_VERSION = "direct-mapping-v1"
+DIRECT_MAPPING_RULE_VERSION = "direct-mapping-v2"
 TARGET_METRIC_DEFINITION_VERSION = "target-metrics-v1"
 
 
@@ -71,6 +71,7 @@ DIRECT_MAPPING_RULES = DirectMappingRuleSet(
             candidates=_candidates(
                 "StockholdersEquity",
                 "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                "PartnersCapital",
             ),
         ),
         MetricRule(

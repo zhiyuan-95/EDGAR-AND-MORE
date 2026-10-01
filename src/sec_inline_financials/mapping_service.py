@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from sec_inline_financials.direct_mapping import resolve_metric_window
 from sec_inline_financials.errors import MappingInputError
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION
 from sec_inline_financials.evidence_models import ReportKind
 from sec_inline_financials.mapping_models import (
     CompanyMappingResult,
@@ -43,7 +44,7 @@ class DirectMappingService:
         report_kinds: tuple[ReportKind, ...] = ("annual", "quarterly")
         for kind in report_kinds:
             try:
-                inputs[kind] = self._store.list_mapping_inputs(ticker, kind, "report-v1")
+                inputs[kind] = self._store.list_mapping_inputs(ticker, kind, REPORT_RULE_VERSION)
             except MappingInputError as exc:
                 if require_complete_window:
                     raise

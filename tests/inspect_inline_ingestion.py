@@ -7,6 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION
 from sec_inline_financials.models import (
     AnnualResult,
     QuarterlyReportData,
@@ -218,11 +219,11 @@ def _build_annual_report(
         evaluation = store.get_report_evaluation(
             snapshot.snapshot_id,
             "annual",
-            "report-v1",
+            REPORT_RULE_VERSION,
         )
         if evaluation is None:
             raise RuntimeError(
-                f"Snapshot {snapshot.snapshot_id} has no annual report-v1 evaluation."
+                f"Snapshot {snapshot.snapshot_id} has no annual {REPORT_RULE_VERSION} evaluation."
             )
         projected = project_stored_report(
             store,
@@ -252,11 +253,12 @@ def _build_quarterly_report(
         evaluation = store.get_report_evaluation(
             snapshot.snapshot_id,
             "quarterly",
-            "report-v1",
+            REPORT_RULE_VERSION,
         )
         if evaluation is None:
             raise RuntimeError(
-                f"Snapshot {snapshot.snapshot_id} has no quarterly report-v1 evaluation."
+                f"Snapshot {snapshot.snapshot_id} has no quarterly "
+                f"{REPORT_RULE_VERSION} evaluation."
             )
         projected = project_stored_report(
             store,

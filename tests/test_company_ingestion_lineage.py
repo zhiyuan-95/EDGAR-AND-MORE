@@ -6,6 +6,7 @@ from sec_inline_financials.company_lineage import (
     LineageMaintenanceService,
     RegistrantIdentity,
 )
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION
 from sec_inline_financials.evidence_models import (
     CoverageManifest,
     ExtractionProfile,
@@ -117,7 +118,7 @@ def test_cik_ingestion_processes_and_publishes_predecessor_filing(tmp_path: Path
     result = service.ingest_company_cik("2", annual_count=1, quarterly_count=1)
 
     assert result.active_accessions == (predecessor_filing.accession,)
-    mapping_inputs = store.list_mapping_inputs("NEW", "annual", "report-v1")
+    mapping_inputs = store.list_mapping_inputs("NEW", "annual", REPORT_RULE_VERSION)
     assert mapping_inputs[0].registrant_ciks == ("0000000001",)
 
 

@@ -58,7 +58,7 @@ def test_version_six_database_backfills_membership_and_filing_provenance(tmp_pat
             "'2026-02-01', '2025-12-31', 'annual.htm', 'https://www.sec.gov/example')"
         )
 
-    assert store.initialize() == 7
+    assert store.initialize() == 8
     lineage = store.load_company_lineage("2")
 
     assert lineage is not None
@@ -92,16 +92,36 @@ def test_approved_link_creates_explicit_predecessor_edge(tmp_path: Path) -> None
     )
     service = LineageMaintenanceService(store=store, registrant_resolver=_Resolver())
 
-    plan = service.preview_link("2", "1")
+    plan = service.preview_link("2", "1", effective_date=date(2024, 7, 10))
     disposition = service.apply_link(plan)
 
     assert plan.successor.legal_name == "Current Legal Name"
     assert plan.predecessor.legal_name == "Predecessor Legal Name"
     assert disposition == "created"
+    assert store.load_company_lineage("2").edges[0].effective_date == date(2024, 7, 10)
     assert store.load_company_lineage("2").current_to_oldest == (
         RegistrantIdentity(cik="0000000002", legal_name="Current Legal Name"),
         RegistrantIdentity(cik="0000000001", legal_name="Predecessor Legal Name"),
     )
+
+
+def test_existing_edge_accepts_one_immutable_effective_date(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path / "evidence.sqlite3")
+    store.initialize()
+    store.create_processing_run(
+        Company(ticker="NEW", cik="0000000002", name="Stored Current Name"),
+        purpose="test",
+        requested_window={},
+    )
+    service = LineageMaintenanceService(store=store, registrant_resolver=_Resolver())
+    service.apply_link(service.preview_link("2", "1"))
+
+    dated = service.preview_link("2", "1", effective_date=date(2024, 7, 10))
+
+    assert service.apply_link(dated) == "updated"
+    assert store.load_company_lineage("2").edges[0].effective_date == date(2024, 7, 10)
+    with pytest.raises(LineageError, match="effective date is already verified"):
+        service.preview_link("2", "1", effective_date=date(2024, 7, 11))
 
 
 def test_filing_provenance_is_immutable_for_an_accession(tmp_path: Path) -> None:
