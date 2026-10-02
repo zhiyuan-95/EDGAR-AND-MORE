@@ -265,10 +265,11 @@ class LineageMaintenanceService:
         return self._store.apply_lineage_patch(plan)
 
     def apply_and_ingest(self, plan: LineagePatchPlan) -> LineageMaintenanceResult:
-        disposition = self.apply_link(plan)
-        if self._ingest_company_cik is None:
+        ingest_company_cik = self._ingest_company_cik
+        if ingest_company_cik is None:
             raise LineageError("Lineage ingestion is not configured.")
-        ingestion = self._ingest_company_cik(plan.before.canonical_current_cik)
+        disposition = self.apply_link(plan)
+        ingestion = ingest_company_cik(plan.before.canonical_current_cik)
         return LineageMaintenanceResult(disposition=disposition, ingestion=ingestion)
 
     def _resolved_identity(self, cik: str) -> RegistrantIdentity:

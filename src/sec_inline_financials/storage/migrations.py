@@ -16,6 +16,8 @@ class Migration:
     filename: str
     checksum: str
     sql: str
+
+
 @dataclass(frozen=True)
 class MigrationStatus:
     database_exists: bool
@@ -34,6 +36,7 @@ class MigrationStatus:
     @property
     def pending_filenames(self) -> tuple[str, ...]:
         return tuple(migration.filename for migration in self.pending)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -68,12 +71,12 @@ def _load_migrations() -> tuple[Migration, ...]:
         raise SchemaError(f"Migration versions must be consecutive from 1; found {versions}.")
     return tuple(migrations)
 
+
 def _read_applied_migrations(
     connection: sqlite3.Connection,
 ) -> dict[int, tuple[str, str]]:
     ledger_exists = connection.execute(
-        "SELECT 1 FROM sqlite_master "
-        "WHERE type = 'table' AND name = 'schema_migrations'"
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
     ).fetchone()
 
     if ledger_exists is None:
@@ -82,10 +85,11 @@ def _read_applied_migrations(
     return {
         int(row["version"]): (str(row["filename"]), str(row["checksum"]))
         for row in connection.execute(
-            "SELECT version, filename, checksum "
-            "FROM schema_migrations ORDER BY version"
+            "SELECT version, filename, checksum FROM schema_migrations ORDER BY version"
         )
     }
+
+
 def _statements(sql: str) -> tuple[str, ...]:
     statements: list[str] = []
     pending = ""
@@ -99,6 +103,7 @@ def _statements(sql: str) -> tuple[str, ...]:
     if pending.strip():
         raise SchemaError("Migration ends with an incomplete SQL statement.")
     return tuple(statements)
+
 
 def inspect_database_schema(database: EvidenceDatabase) -> MigrationStatus:
     """Report migration state without creating or modifying the database."""
@@ -117,9 +122,7 @@ def inspect_database_schema(database: EvidenceDatabase) -> MigrationStatus:
         with database.read_connection() as connection:
             applied = _read_applied_migrations(connection)
     except sqlite3.DatabaseError as exc:
-        raise SchemaError(
-            f"Could not inspect evidence database: {exc}"
-        ) from exc
+        raise SchemaError(f"Could not inspect evidence database: {exc}") from exc
 
     current_version = max(applied, default=0)
 
@@ -135,11 +138,7 @@ def inspect_database_schema(database: EvidenceDatabase) -> MigrationStatus:
                 f"packaged {migration.filename}."
             )
 
-    pending = tuple(
-        migration
-        for migration in migrations
-        if migration.version not in applied
-    )
+    pending = tuple(migration for migration in migrations if migration.version not in applied)
 
     return MigrationStatus(
         database_exists=True,
@@ -147,6 +146,29 @@ def inspect_database_schema(database: EvidenceDatabase) -> MigrationStatus:
         supported_version=supported_version,
         pending=pending,
     )
+
+
+def _require_database_integrity(connection: sqlite3.Connection) -> None:
+    foreign_key_issues = connection.execute("PRAGMA foreign_key_check").fetchall()
+    integrity_messages = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+
+    failures: list[str] = []
+
+    if foreign_key_issues:
+        samples = ", ".join(
+            f"{row['table']} rowid={row['rowid']} -> {row['parent']}"
+            for row in foreign_key_issues[:5]
+        )
+        failures.append(
+            f"foreign_key_check reported {len(foreign_key_issues)} violation(s): {samples}"
+        )
+
+    if integrity_messages != ("ok",):
+        details = "; ".join(integrity_messages[:5]) or "no result"
+        failures.append(f"integrity_check reported: {details}")
+
+    if failures:
+        raise SchemaError("Migration integrity validation failed: " + "; ".join(failures))
 
 
 def initialize_database(database: EvidenceDatabase) -> int:
@@ -160,6 +182,8 @@ def initialize_database(database: EvidenceDatabase) -> int:
                     f"Database schema version {max(applied)} is newer than supported "
                     f"version {newest_known}."
                 )
+            pending_migrations: list[Migration] = []
+
             for migration in migrations:
                 recorded = applied.get(migration.version)
                 if recorded is not None:
@@ -169,18 +193,28 @@ def initialize_database(database: EvidenceDatabase) -> int:
                             f"{migration.filename}."
                         )
                     continue
+
                 for statement in _statements(migration.sql):
                     connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, filename, checksum, applied_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        migration.version,
-                        migration.filename,
-                        migration.checksum,
-                        _utc_now(),
-                    ),
-                )
+
+                pending_migrations.append(migration)
+
+            if pending_migrations:
+                _require_database_integrity(connection)
+
+                for migration in pending_migrations:
+                    connection.execute(
+                        "INSERT INTO schema_migrations("
+                        "version, filename, checksum, applied_at"
+                        ") VALUES (?, ?, ?, ?)",
+                        (
+                            migration.version,
+                            migration.filename,
+                            migration.checksum,
+                            _utc_now(),
+                        ),
+                    )
+            _require_database_integrity(connection)
         return migrations[-1].version
     except SchemaError:
         raise

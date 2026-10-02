@@ -181,7 +181,7 @@ This workflow does not generate a TXT inspection report.
 ### 4.3 Inspection report generation
 
 1. The project owner explicitly runs `uv run --no-sync python tests/inspect_inline_ingestion.py`.
-2. The script selects stored annual fiscal years or any available Q1-Q3 quarterly periods grouped by fiscal year, including partial years, and replays their persisted `report-v1` evaluations without SEC or Arelle access.
+2. The script selects stored annual fiscal years or any available Q1-Q3 quarterly periods grouped by fiscal year, including partial years, and replays their persisted `report-v2` evaluations without SEC or Arelle access.
 3. The resulting TXT report and complete-facts JSON file are used for manual inspection.
 
 This workflow remains separate from normal ingestion, updates, and frontend use.

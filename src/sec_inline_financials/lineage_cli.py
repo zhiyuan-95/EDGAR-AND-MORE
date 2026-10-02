@@ -53,6 +53,18 @@ def _render_plan(plan: LineagePatchPlan, output_fn: OutputFn) -> None:
     output_fn("  Status: already present" if plan.already_present else "  Status: new edge")
 
 
+def _rerun_command(
+    successor_cik: str,
+    predecessor_cik: str,
+    *,
+    effective_date: date | None,
+) -> str:
+    command = f"sec-inline-financials-lineage {successor_cik} {predecessor_cik}"
+    if effective_date is not None:
+        command = f"{command} --effective-date {effective_date.isoformat()}"
+    return command
+
+
 def run_lineage_command(
     service: LineageMaintenanceService,
     successor_cik: str,
@@ -101,15 +113,26 @@ def run_lineage_command(
         return 1
 
     output_fn(f"Lineage: {result.disposition}")
+    rerun_command = _rerun_command(
+        successor_cik,
+        predecessor_cik,
+        effective_date=effective_date,
+    )
     ingestion_status = getattr(result.ingestion, "status", None)
     if ingestion_status is not None:
         output_fn(f"Ingestion: {ingestion_status}")
     else:
         output_fn("Ingestion: completed")
+    if ingestion_status == "checked_no_filings":
+        output_fn("Ingestion warning: no eligible historical filings were found.")
+        output_fn("Lineage relationship was retained.")
+        output_fn(f"Rerun: {rerun_command}")
+        return 1
     ingestion_error = getattr(result.ingestion, "error", None)
     if ingestion_error:
         output_fn(f"Ingestion warning: {ingestion_error}")
-        output_fn("Rerun this same command to retry failed filing ingestion safely.")
+        output_fn("Lineage relationship was retained.")
+        output_fn(f"Rerun: {rerun_command}")
         return 1
     return 0
 

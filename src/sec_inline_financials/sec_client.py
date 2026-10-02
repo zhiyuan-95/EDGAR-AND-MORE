@@ -20,6 +20,14 @@ from sec_inline_financials.models import Company, Filing
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_ROOT = "https://data.sec.gov/submissions"
 _ARCHIVES_ROOT = "https://www.sec.gov/Archives/edgar/data"
+_FILING_COLUMN_NAMES = (
+    "accessionNumber",
+    "form",
+    "isInlineXBRL",
+    "filingDate",
+    "reportDate",
+    "primaryDocument",
+)
 
 JsonFetcher = Callable[[str, dict[str, str]], Any]
 FilingSelector = Callable[[list[Filing]], list[Filing]]
@@ -262,24 +270,24 @@ class SecClient:
         *,
         forms: frozenset[str] = frozenset({"10-K", "10-Q"}),
     ) -> list[Filing]:
-        accessions = columns.get("accessionNumber", [])
-        form_values = columns.get("form", [])
-        inline_values = columns.get("isInlineXBRL", [])
-        if not all(isinstance(values, list) for values in (accessions, form_values, inline_values)):
-            return []
+        column_values = _validated_filing_columns(columns, cik=company.cik)
+        accessions = column_values["accessionNumber"]
+        form_values = column_values["form"]
+        inline_values = column_values["isInlineXBRL"]
+        filing_dates = column_values["filingDate"]
+        report_dates = column_values["reportDate"]
+        primary_documents = column_values["primaryDocument"]
         filings: list[Filing] = []
         for index, accession_value in enumerate(accessions):
-            if index >= len(form_values) or index >= len(inline_values):
-                continue
             filing_form = str(form_values[index])
             inline = inline_values[index]
             if filing_form not in forms or inline not in (1, True, "1"):
                 continue
             try:
                 accession = str(accession_value).strip()
-                filing_date = date.fromisoformat(str(columns["filingDate"][index]))
-                report_date = date.fromisoformat(str(columns["reportDate"][index]))
-                primary_document = str(columns["primaryDocument"][index]).strip()
+                filing_date = date.fromisoformat(str(filing_dates[index]))
+                report_date = date.fromisoformat(str(report_dates[index]))
+                primary_document = str(primary_documents[index]).strip()
                 if not accession or not primary_document:
                     raise ValueError("blank accession or primary document")
             except (KeyError, IndexError, TypeError, ValueError) as exc:
@@ -302,6 +310,26 @@ class SecClient:
                 )
             )
         return filings
+
+
+def _validated_filing_columns(columns: Mapping[str, Any], *, cik: str) -> dict[str, list[Any]]:
+    parsed: dict[str, list[Any]] = {}
+    lengths: dict[str, int] = {}
+    for name in _FILING_COLUMN_NAMES:
+        values = columns.get(name)
+        if not isinstance(values, list):
+            raise DiscoveryError(
+                f"SEC submissions filing column {name!r} for CIK {cik} is missing or is not a list."
+            )
+        parsed[name] = values
+        lengths[name] = len(values)
+
+    if len(set(lengths.values())) > 1:
+        shape = ", ".join(f"{name}={lengths[name]}" for name in _FILING_COLUMN_NAMES)
+        raise DiscoveryError(
+            f"SEC submissions filing columns for CIK {cik} have mismatched lengths: {shape}."
+        )
+    return parsed
 
 
 def _member_slots(candidates: list[Filing]) -> tuple[dict[int, Filing], dict[date, Filing]]:
