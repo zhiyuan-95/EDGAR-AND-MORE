@@ -16,7 +16,24 @@ class Migration:
     filename: str
     checksum: str
     sql: str
+@dataclass(frozen=True)
+class MigrationStatus:
+    database_exists: bool
+    current_version: int
+    supported_version: int
+    pending: tuple[Migration, ...]
 
+    @property
+    def newer_than_code(self) -> bool:
+        return self.current_version > self.supported_version
+
+    @property
+    def is_current(self) -> bool:
+        return not self.newer_than_code and not self.pending
+
+    @property
+    def pending_filenames(self) -> tuple[str, ...]:
+        return tuple(migration.filename for migration in self.pending)
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -51,7 +68,24 @@ def _load_migrations() -> tuple[Migration, ...]:
         raise SchemaError(f"Migration versions must be consecutive from 1; found {versions}.")
     return tuple(migrations)
 
+def _read_applied_migrations(
+    connection: sqlite3.Connection,
+) -> dict[int, tuple[str, str]]:
+    ledger_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()
 
+    if ledger_exists is None:
+        return {}
+
+    return {
+        int(row["version"]): (str(row["filename"]), str(row["checksum"]))
+        for row in connection.execute(
+            "SELECT version, filename, checksum "
+            "FROM schema_migrations ORDER BY version"
+        )
+    }
 def _statements(sql: str) -> tuple[str, ...]:
     statements: list[str] = []
     pending = ""
@@ -66,22 +100,60 @@ def _statements(sql: str) -> tuple[str, ...]:
         raise SchemaError("Migration ends with an incomplete SQL statement.")
     return tuple(statements)
 
+def inspect_database_schema(database: EvidenceDatabase) -> MigrationStatus:
+    """Report migration state without creating or modifying the database."""
+    migrations = _load_migrations()
+    supported_version = migrations[-1].version
+
+    if not database.path.exists():
+        return MigrationStatus(
+            database_exists=False,
+            current_version=0,
+            supported_version=supported_version,
+            pending=migrations,
+        )
+
+    try:
+        with database.read_connection() as connection:
+            applied = _read_applied_migrations(connection)
+    except sqlite3.DatabaseError as exc:
+        raise SchemaError(
+            f"Could not inspect evidence database: {exc}"
+        ) from exc
+
+    current_version = max(applied, default=0)
+
+    # Continue validating every packaged migration that appears in the ledger.
+    for migration in migrations:
+        recorded = applied.get(migration.version)
+        if recorded is not None and recorded != (
+            migration.filename,
+            migration.checksum,
+        ):
+            raise SchemaError(
+                f"Applied migration {migration.version} does not match "
+                f"packaged {migration.filename}."
+            )
+
+    pending = tuple(
+        migration
+        for migration in migrations
+        if migration.version not in applied
+    )
+
+    return MigrationStatus(
+        database_exists=True,
+        current_version=current_version,
+        supported_version=supported_version,
+        pending=pending,
+    )
+
 
 def initialize_database(database: EvidenceDatabase) -> int:
     migrations = _load_migrations()
     try:
         with database.write_transaction() as connection:
-            ledger_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
-            ).fetchone()
-            applied: dict[int, tuple[str, str]] = {}
-            if ledger_exists:
-                applied = {
-                    int(row["version"]): (str(row["filename"]), str(row["checksum"]))
-                    for row in connection.execute(
-                        "SELECT version, filename, checksum FROM schema_migrations ORDER BY version"
-                    )
-                }
+            applied = _read_applied_migrations(connection)
             newest_known = migrations[-1].version
             if applied and max(applied) > newest_known:
                 raise SchemaError(

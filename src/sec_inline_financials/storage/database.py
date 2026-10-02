@@ -43,7 +43,39 @@ class EvidenceDatabase:
             yield connection
         finally:
             connection.close()
+    def connect_read_only(self) -> sqlite3.Connection:
+        """Open an existing database without creating or reconfiguring it."""
+        try:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=self._busy_timeout_seconds,
+                isolation_level=None,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute(
+                f"PRAGMA busy_timeout = {int(self._busy_timeout_seconds * 1000)}"
+            )
+            return connection
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise DatabaseBusyError(
+                    f"Evidence database is busy: {self.path}"
+                ) from exc
+            raise EvidenceStorageError(
+                f"Could not open evidence database read-only: {self.path}: {exc}"
+            ) from exc
 
+
+    @contextmanager
+    def read_connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self.connect_read_only()
+        try:
+            yield connection
+        finally:
+            connection.close()
     @contextmanager
     def write_transaction(self) -> Iterator[sqlite3.Connection]:
         with self.connection() as connection:
