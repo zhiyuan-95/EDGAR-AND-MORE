@@ -12,10 +12,10 @@ from sec_inline_financials.company_lineage import (
     LineagePatchPlan,
     normalize_cik,
 )
-from sec_inline_financials.errors import ExplorerError, SchemaError
+from sec_inline_financials.errors import ExplorerError
+from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
 from sec_inline_financials.sec_client import SecClient
 from sec_inline_financials.storage.evidence_store import EvidenceStore
-from sec_inline_financials.storage.migrations import inspect_database_schema
 
 InputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
@@ -154,43 +154,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         predecessor_cik = normalize_cik(args.predecessor_cik)
         settings = IngestionSettings.from_environment(environment=os.environ)
         store = EvidenceStore(settings.database_path, settings.artifact_root)
-        schema = inspect_database_schema(store.database)
-
-        if schema.newer_than_code:
-            raise SchemaError(
-                f"Database schema version {schema.current_version} is newer than "
-                f"supported version {schema.supported_version}."
-            )
-
-        if schema.pending:
-            print(
-                f"Database schema version {schema.current_version} must be upgraded "
-                f"to version {schema.supported_version}."
-            )
-            print("Pending migrations:")
-            for filename in schema.pending_filenames:
-                print(f"  - {filename}")
-            print("Warning: older code may reject the upgraded database.")
-
-            while True:
-                try:
-                    answer = input("Apply these database migrations? [y/n]: ").strip().lower()
-                except EOFError:
-                    answer = ""
-                except KeyboardInterrupt:
-                    print("\nMigration cancelled; database unchanged.")
-                    return 130
-
-                if answer == "y":
-                    store.initialize()
-                    print(f"Database upgraded to version {schema.supported_version}.")
-                    break
-
-                if answer in {"", "n"}:
-                    print("Migration cancelled; database unchanged.")
-                    return 0
-
-                print("Please enter y or n.")
+        try:
+            if not ensure_schema_upgrade_approved(store):
+                return 0
+        except KeyboardInterrupt:
+            return 130
 
         sec_client = SecClient(user_agent=settings.sec_user_agent)
         ingestion_service = CompanyIngestionService(

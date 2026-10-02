@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from sec_inline_financials.errors import ExplorerError
 from sec_inline_financials.mapping_models import MetricEvaluationRef
 from sec_inline_financials.mapping_service import DirectMappingService
+from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
@@ -29,6 +30,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         paths = evidence_runtime_paths(os.environ)
         store = EvidenceStore(paths.database, paths.artifacts)
+        if not ensure_schema_upgrade_approved(store):
+            return 0
         result = DirectMappingService(store).evaluate_company(args.ticker)
     except (ExplorerError, ValueError) as exc:
         print(f"Error: {exc}")

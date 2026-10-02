@@ -4,6 +4,11 @@ from typing import Any
 
 import pytest
 
+from sec_inline_financials.company_lineage import (
+    LineageEdge,
+    RegistrantIdentity,
+    build_company_lineage,
+)
 from sec_inline_financials.errors import DiscoveryError
 from sec_inline_financials.models import Company
 from sec_inline_financials.sec_client import SecClient
@@ -59,3 +64,132 @@ def test_discover_annual_inline_filings_rejects_mismatched_column_lengths() -> N
 
     with pytest.raises(DiscoveryError, match="mismatched lengths"):
         client.discover_annual_inline_filings(_COMPANY, count=1)
+
+
+def test_discover_company_window_fills_lineage_gaps_without_overwriting_current_slots() -> None:
+    successor_cik = "0000000002"
+    predecessor_cik = "0000000001"
+    lineage = build_company_lineage(
+        company_id=1,
+        canonical_current_cik=successor_cik,
+        members=(
+            RegistrantIdentity(successor_cik, "Successor Corp"),
+            RegistrantIdentity(predecessor_cik, "Predecessor Corp"),
+        ),
+        edges=(LineageEdge(predecessor_cik, successor_cik),),
+    )
+    payloads = {
+        successor_cik: _submissions_payload(
+            successor_cik,
+            (
+                _filing_row(
+                    accession="0000000002-26-000010",
+                    form="10-K",
+                    filing_date="2026-02-15",
+                    report_date="2025-12-31",
+                    primary_document="successor-20251231.htm",
+                ),
+                _filing_row(
+                    accession="0000000002-26-000020",
+                    form="10-Q",
+                    filing_date="2026-05-05",
+                    report_date="2026-03-31",
+                    primary_document="successor-20260331.htm",
+                ),
+            ),
+        ),
+        predecessor_cik: _submissions_payload(
+            predecessor_cik,
+            (
+                _filing_row(
+                    accession="0000000001-26-000010",
+                    form="10-K",
+                    filing_date="2026-03-01",
+                    report_date="2025-12-31",
+                    primary_document="predecessor-20251231.htm",
+                ),
+                _filing_row(
+                    accession="0000000001-25-000010",
+                    form="10-K",
+                    filing_date="2025-02-15",
+                    report_date="2024-12-31",
+                    primary_document="predecessor-20241231.htm",
+                ),
+                _filing_row(
+                    accession="0000000001-26-000020",
+                    form="10-Q",
+                    filing_date="2026-05-20",
+                    report_date="2026-03-31",
+                    primary_document="predecessor-20260331.htm",
+                ),
+                _filing_row(
+                    accession="0000000001-26-000021",
+                    form="10-Q",
+                    filing_date="2026-02-01",
+                    report_date="2025-12-31",
+                    primary_document="predecessor-20251231q.htm",
+                ),
+            ),
+        ),
+    }
+
+    def fetch_json(url: str, _headers: dict[str, str]) -> Any:
+        for cik, payload in payloads.items():
+            if url.endswith(f"/CIK{cik}.json"):
+                return payload
+        raise AssertionError(f"Unexpected SEC URL: {url}")
+
+    client = SecClient(user_agent="SEC Client Test test@example.com", fetch_json=fetch_json)
+
+    window = client.discover_company_window(lineage, annual_count=2, quarterly_count=2)
+
+    assert tuple(filing.accession for filing in window.annual) == (
+        "0000000002-26-000010",
+        "0000000001-25-000010",
+    )
+    assert tuple(filing.registrant_cik for filing in window.annual) == (
+        successor_cik,
+        predecessor_cik,
+    )
+    assert tuple(filing.accession for filing in window.quarterly) == (
+        "0000000002-26-000020",
+        "0000000001-26-000021",
+    )
+
+
+def _filing_row(
+    *,
+    accession: str,
+    form: str,
+    filing_date: str,
+    report_date: str,
+    primary_document: str,
+) -> dict[str, Any]:
+    return {
+        "accessionNumber": accession,
+        "form": form,
+        "isInlineXBRL": 1,
+        "filingDate": filing_date,
+        "reportDate": report_date,
+        "primaryDocument": primary_document,
+    }
+
+
+def _submissions_payload(cik: str, rows: tuple[dict[str, Any], ...]) -> dict[str, Any]:
+    return {
+        "cik": int(cik),
+        "filings": {
+            "recent": {
+                column: [row[column] for row in rows]
+                for column in (
+                    "accessionNumber",
+                    "form",
+                    "isInlineXBRL",
+                    "filingDate",
+                    "reportDate",
+                    "primaryDocument",
+                )
+            },
+            "files": [],
+        },
+    }

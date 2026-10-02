@@ -43,7 +43,7 @@ def _insert_company(database_path: Path, *, cik: str, name: str) -> None:
 def test_apply_and_ingest_without_ingestion_callback_does_not_commit_lineage(
     database_at_version: DatabaseAtVersionFactory,
 ) -> None:
-    database_path = database_at_version(8)
+    database_path = database_at_version(9)
     successor_cik = "0000000001"
     predecessor_cik = "0000000002"
     _insert_company(database_path, cik=successor_cik, name="Successor Corp")

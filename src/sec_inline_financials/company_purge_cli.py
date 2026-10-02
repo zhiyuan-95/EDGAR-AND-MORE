@@ -23,6 +23,7 @@ from sec_inline_financials.company_purge import (
     FileCleanupReport,
 )
 from sec_inline_financials.errors import ExplorerError
+from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
@@ -100,6 +101,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = EvidenceStore(paths.database, paths.artifacts)
     purger = CompanyDataPurger(store)
     try:
+        if not ensure_schema_upgrade_approved(store):
+            return 0
         if args.cleanup_pending:
             cleanup = purger.cleanup_pending_files()
             _print_cleanup(cleanup)

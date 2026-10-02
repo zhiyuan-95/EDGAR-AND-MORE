@@ -24,6 +24,7 @@ from sec_inline_financials.errors import (
     EvidenceStorageError,
     FilingMetadataError,
     MappingInputError,
+    SchemaError,
     SnapshotMismatchError,
 )
 from sec_inline_financials.evidence_models import (
@@ -78,7 +79,7 @@ from sec_inline_financials.storage.fingerprints import (
     sha256_text,
     source_manifest_hash,
 )
-from sec_inline_financials.storage.migrations import initialize_database
+from sec_inline_financials.storage.migrations import initialize_database, inspect_database_schema
 
 _PROCESS_START_IDENTITY = f"{os.getpid()}:{time.time_ns()}"
 _TEXT_PAYLOAD_THRESHOLD_BYTES = 1024
@@ -314,7 +315,17 @@ class EvidenceStore:
         self.database = EvidenceDatabase(database_path, busy_timeout_seconds=busy_timeout_seconds)
         self.artifacts = ArtifactStore(artifact_root or database_path.parent)
 
-    def initialize(self) -> int:
+    def initialize(self, *, allow_schema_upgrade: bool = False) -> int:
+        if not allow_schema_upgrade:
+            schema = inspect_database_schema(self.database)
+            if schema.database_exists and schema.current_version > 0 and schema.pending:
+                pending = ", ".join(schema.pending_filenames)
+                raise SchemaError(
+                    f"Database schema version {schema.current_version} must be upgraded "
+                    f"to version {schema.supported_version} before continuing. "
+                    "Existing evidence databases require explicit migration approval. "
+                    f"Pending migrations: {pending}."
+                )
         return initialize_database(self.database)
 
     def get_company_state(self, ticker: str) -> StoredCompanyState | None:
@@ -2128,9 +2139,9 @@ class EvidenceStore:
             filing_id = _last_row_id(cursor)
             connection.execute(
                 "INSERT INTO filing_provenance("
-                "filing_id, registrant_cik, archive_owner_cik, recorded_at"
-                ") VALUES (?, ?, ?, ?)",
-                (filing_id, registrant_cik, archive_owner_cik, _now()),
+                "filing_id, company_id, registrant_cik, archive_owner_cik, recorded_at"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (filing_id, company_id, registrant_cik, archive_owner_cik, _now()),
             )
             return filing_id
         existing = (

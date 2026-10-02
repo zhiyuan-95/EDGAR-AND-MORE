@@ -34,17 +34,21 @@ For the production request-triggered workflow, run:
 
 ```powershell
 uv run --no-sync sec-inline-financials AAPL
+uv run --no-sync sec-inline-financials AAPL MSFT NVDA
+uv run --no-sync sec-inline-financials AAPL,MSFT,NVDA
 ```
 
 This command writes flushed stage/per-filing progress to stderr. It writes the final
 company and run summaries, elapsed time, evidence root, content-addressed artifact
 directory, and SQLite path to stdout. Use `--annual-count`, `--quarterly-count`, and
-`--force` when needed.
+`--force` when needed. Multi-company batches run sequentially, continue after a
+per-company failure, and exit nonzero if any requested ticker fails.
 
 The lower-level aliases omit the final timing and path lines:
 
 ```powershell
 uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 

@@ -10,17 +10,22 @@ The primary console command is:
 
 ```powershell
 uv run --no-sync sec-inline-financials AAPL
+uv run --no-sync sec-inline-financials AAPL MSFT NVDA
+uv run --no-sync sec-inline-financials AAPL,MSFT,NVDA
 ```
 
-It runs the production company-ingestion path, writes flushed progress to stderr,
-then writes the company/run summary, elapsed time, and resolved evidence paths to
-stdout.
+It runs the production company-ingestion path for one or more tickers, writes
+flushed progress to stderr, then writes each company/run summary, elapsed time,
+and resolved evidence paths to stdout. Multi-company ingestion is sequential; if
+one ticker fails, the command reports that error, continues with the remaining
+tickers, and exits nonzero after the batch finishes.
 
 The lower-level console aliases run the same ingestion without the final timing and
 path lines:
 
 ```powershell
 uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
@@ -252,7 +257,7 @@ stay on stdout.
 `sec-inline-financials` also prints elapsed time and the resolved evidence root,
 content-addressed object directory, and SQLite path after the ingestion command
 returns. `sec-inline-financials-ingest` and the module entry point omit those extra
-lines.
+lines. All forms accept multiple tickers separated by spaces or commas.
 
 Selected filings run sequentially. Arelle sessions share process state and must not
 be run concurrently in threads.

@@ -200,8 +200,6 @@ def initialize_database(database: EvidenceDatabase) -> int:
                 pending_migrations.append(migration)
 
             if pending_migrations:
-                _require_database_integrity(connection)
-
                 for migration in pending_migrations:
                     connection.execute(
                         "INSERT INTO schema_migrations("
@@ -214,7 +212,7 @@ def initialize_database(database: EvidenceDatabase) -> int:
                             _utc_now(),
                         ),
                     )
-            _require_database_integrity(connection)
+                _require_database_integrity(connection)
         return migrations[-1].version
     except SchemaError:
         raise

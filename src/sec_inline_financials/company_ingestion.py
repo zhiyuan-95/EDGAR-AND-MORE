@@ -28,6 +28,7 @@ from sec_inline_financials.evidence_models import FilingOutcome, RunOutcome, Sto
 from sec_inline_financials.mapping_models import CompanyMappingResult
 from sec_inline_financials.mapping_service import DirectMappingService
 from sec_inline_financials.models import Company, Filing
+from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
 from sec_inline_financials.sec_client import DiscoveredCompanyWindow, SecClient
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
@@ -619,24 +620,27 @@ def _print_cli_progress(message: str) -> None:
     print(f"[progress] {message}", file=sys.stderr, flush=True)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest or update retained SEC filing evidence.")
-    parser.add_argument("ticker")
-    parser.add_argument("--annual-count", type=int, default=5)
-    parser.add_argument("--quarterly-count", type=int, default=12)
-    parser.add_argument("--force", action="store_true", help="Check SEC even when not yet due.")
-    args = parser.parse_args(argv)
-    settings = replace(
-        IngestionSettings.from_environment(),
-        annual_count=args.annual_count,
-        quarterly_count=args.quarterly_count,
-        force_refresh=args.force,
-    )
-    try:
-        result = ingest_company(args.ticker, settings, progress=_print_cli_progress)
-    except ExplorerError as exc:
-        print(f"Error: {exc}")
-        return 1
+def _normalize_cli_tickers(values: Sequence[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for part in value.split(","):
+            ticker = part.strip().upper()
+            if not ticker:
+                continue
+            if _TICKER_PATTERN.fullmatch(ticker) is None:
+                raise IngestionError(
+                    f"Invalid ticker {ticker!r}; use 1-10 letters, digits, dots, or hyphens."
+                )
+            if ticker not in seen:
+                normalized.append(ticker)
+                seen.add(ticker)
+    if not normalized:
+        raise IngestionError("Provide at least one company ticker.")
+    return tuple(normalized)
+
+
+def _print_cli_result(result: CompanyIngestionResult) -> None:
     print(f"{result.company.ticker}: {result.status}")
     if result.run is not None:
         print(f"Run: {result.run.run_id} ({result.run.status})")
@@ -663,7 +667,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Quarterly mapping: not run ({result.mapping.quarterly_error})")
     if result.mapping_error:
         print(f"Mapping warning: {result.mapping_error}")
-    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Ingest or update retained SEC filing evidence.")
+    parser.add_argument(
+        "tickers",
+        nargs="+",
+        help="One or more tickers, separated by spaces or commas.",
+    )
+    parser.add_argument("--annual-count", type=int, default=5)
+    parser.add_argument("--quarterly-count", type=int, default=12)
+    parser.add_argument("--force", action="store_true", help="Check SEC even when not yet due.")
+    args = parser.parse_args(argv)
+    try:
+        tickers = _normalize_cli_tickers(args.tickers)
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    settings = replace(
+        IngestionSettings.from_environment(),
+        annual_count=args.annual_count,
+        quarterly_count=args.quarterly_count,
+        force_refresh=args.force,
+    )
+    store = EvidenceStore(settings.database_path, settings.artifact_root)
+    try:
+        if not ensure_schema_upgrade_approved(store):
+            return 0
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    failed = False
+    for ticker in tickers:
+        try:
+            result = ingest_company(ticker, settings, progress=_print_cli_progress)
+        except ExplorerError as exc:
+            failed = True
+            if len(tickers) == 1:
+                print(f"Error: {exc}")
+            else:
+                print(f"{ticker}: Error: {exc}")
+            continue
+        _print_cli_result(result)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

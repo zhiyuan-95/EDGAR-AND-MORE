@@ -57,7 +57,7 @@ def test_schema_five_database_upgrades_to_compressed_text_payloads(tmp_path: Pat
 
     store = EvidenceStore(database_path, tmp_path)
 
-    assert store.initialize() == _load_migrations()[-1].version
+    assert store.initialize(allow_schema_upgrade=True) == _load_migrations()[-1].version
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT count(*) FROM text_payloads").fetchone() == (0,)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(facts)").fetchall()}

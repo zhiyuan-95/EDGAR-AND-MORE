@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from sec_inline_financials.company_ingestion import CompanyIngestionResult
 from sec_inline_financials.company_lineage import LineageMaintenanceService, RegistrantIdentity
 from sec_inline_financials.lineage_cli import run_lineage_command
@@ -47,3 +49,34 @@ def test_empty_lineage_ingestion_retains_edge_and_exits_nonzero(tmp_path: Path) 
     assert "Ingestion: checked_no_filings" in output
     assert "Lineage relationship was retained." in output
     assert "Rerun: sec-inline-financials-lineage 2 1" in output
+
+
+@pytest.mark.parametrize("answer", ["n", ""])
+def test_cancelled_lineage_confirmation_does_not_mutate_or_ingest(
+    tmp_path: Path,
+    answer: str,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence.sqlite3")
+    store.initialize()
+    company = Company(ticker="NEW", cik="0000000002", name="Stored Current Name")
+    store.create_processing_run(company, purpose="seed", requested_window={})
+    service = LineageMaintenanceService(
+        store=store,
+        registrant_resolver=_Resolver(),
+        ingest_company_cik=lambda _cik: pytest.fail("cancelled lineage must not ingest"),
+    )
+    output: list[str] = []
+
+    exit_code = run_lineage_command(
+        service,
+        "2",
+        "1",
+        input_fn=lambda _prompt: answer,
+        output_fn=output.append,
+    )
+
+    lineage = store.load_company_lineage("2")
+    assert exit_code == 0
+    assert lineage is not None
+    assert lineage.current_to_oldest == (RegistrantIdentity("0000000002", "Stored Current Name"),)
+    assert "Lineage cancelled; no lineage or ingestion changes made." in output
