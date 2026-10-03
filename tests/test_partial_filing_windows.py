@@ -9,6 +9,7 @@ import pytest
 import sec_inline_financials.company_ingestion as company_ingestion
 from sec_inline_financials.company_ingestion import CompanyIngestionService
 from sec_inline_financials.errors import MappingInputError
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION
 from sec_inline_financials.evidence_ingestion import EvidenceIngestionService
 from sec_inline_financials.evidence_models import FilingOutcome, RunOutcome, StoredCompanyState
 from sec_inline_financials.mapping_models import MappingSnapshotInput, MetricEvaluationRef
@@ -288,6 +289,7 @@ class _MappingStore:
     def list_mapping_inputs(
         self, ticker: str, report_kind: str, report_rule_version: str
     ) -> tuple[MappingSnapshotInput, ...]:
+        assert report_rule_version == REPORT_RULE_VERSION
         if report_kind == "annual":
             raise MappingInputError("No active annual filing window is stored for NEW.")
         return (
@@ -300,7 +302,7 @@ class _MappingStore:
                 active_window_rank=1,
                 payload_hash="payload",
                 report_evaluation_id=9,
-                source_report_rule_version="report-v1",
+                source_report_rule_version=report_rule_version,
                 company_cik=COMPANY.cik,
             ),
         )
@@ -323,7 +325,7 @@ class _DirectMappingService(DirectMappingService):
             definition_version="direct-mapping-v1",
             mapping_rule_version="rules-v1",
             mapping_rule_hash="rules-hash",
-            source_report_rule_version="report-v1",
+            source_report_rule_version=snapshots[0].source_report_rule_version,
             active_window_hash="window-hash",
             reported_count=1,
             missing_count=0,
@@ -341,4 +343,5 @@ def test_available_mapping_runs_each_non_empty_form_independently() -> None:
     assert result.annual_error == "No active annual filing window is stored for NEW."
     assert result.quarterly is not None
     assert result.quarterly.reported_count == 1
+    assert result.quarterly.source_report_rule_version == REPORT_RULE_VERSION
     assert result.quarterly_error is None

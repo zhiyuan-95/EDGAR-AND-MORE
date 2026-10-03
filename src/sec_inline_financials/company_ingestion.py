@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
 from sec_inline_financials.arelle_adapter import ArelleProcessor
 from sec_inline_financials.company_lineage import (
@@ -107,7 +107,7 @@ class CompanyIngestionService:
         self,
         *,
         store: EvidenceStore,
-        sec_gateway_factory: Callable[[], SecGateway],
+        sec_gateway_factory: Callable[[], CompanySecGateway],
         processor_factory: Callable[[], EvidenceProcessor],
         today_fn: Callable[[], date] = date.today,
         progress: Callable[[str], None] | None = None,
@@ -169,7 +169,7 @@ class CompanyIngestionService:
 
         try:
             self._progress(f"Checking SEC filings for {requested}...")
-            gateway = cast(CompanySecGateway, self._sec_gateway_factory())
+            gateway = self._sec_gateway_factory()
             company = gateway.resolve_company(requested)
             if previous is None:
                 previous = self._store.get_company_state_by_cik(company.cik)
@@ -238,7 +238,7 @@ class CompanyIngestionService:
             raise IngestionError(
                 f"Successor CIK {normalized} does not belong to a stored company lineage."
             )
-        gateway = cast(CompanySecGateway, self._sec_gateway_factory())
+        gateway = self._sec_gateway_factory()
         window = gateway.discover_company_window(
             lineage,
             annual_count=annual_count,
@@ -419,27 +419,43 @@ class CompanyIngestionService:
         return result, None
 
 
+def _require_sec_user_agent(settings: IngestionSettings) -> str:
+    if settings.sec_user_agent:
+        return settings.sec_user_agent
+    raise DiscoveryError("SEC_USER_AGENT is required when a company refresh must contact the SEC.")
+
+
+def _cached_sec_gateway_factory(
+    settings: IngestionSettings,
+) -> Callable[[], CompanySecGateway]:
+    sec_client: SecClient | None = None
+
+    def get_sec_client() -> CompanySecGateway:
+        nonlocal sec_client
+        if sec_client is None:
+            sec_client = SecClient(user_agent=_require_sec_user_agent(settings))
+        return sec_client
+
+    return get_sec_client
+
+
 def ingest_company(
     ticker: str,
     settings: IngestionSettings,
     *,
     progress: Callable[[str], None] | None = None,
+    sec_gateway_factory: Callable[[], CompanySecGateway] | None = None,
 ) -> CompanyIngestionResult:
     """Ingest or update one company, contacting the SEC only when required."""
     store = EvidenceStore(settings.database_path, settings.artifact_root)
-
-    def require_user_agent() -> str:
-        if settings.sec_user_agent:
-            return settings.sec_user_agent
-        raise DiscoveryError(
-            "SEC_USER_AGENT is required when a company refresh must contact the SEC."
-        )
+    if sec_gateway_factory is None:
+        sec_gateway_factory = _cached_sec_gateway_factory(settings)
 
     service = CompanyIngestionService(
         store=store,
-        sec_gateway_factory=lambda: SecClient(user_agent=require_user_agent()),
+        sec_gateway_factory=sec_gateway_factory,
         processor_factory=lambda: ArelleProcessor(
-            user_agent=require_user_agent(),
+            user_agent=_require_sec_user_agent(settings),
             cache_directory=settings.cache_directory,
         ),
         progress=progress,
@@ -700,10 +716,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         return 130
+    sec_gateway_factory = _cached_sec_gateway_factory(settings)
     failed = False
     for ticker in tickers:
         try:
-            result = ingest_company(ticker, settings, progress=_print_cli_progress)
+            result = ingest_company(
+                ticker,
+                settings,
+                progress=_print_cli_progress,
+                sec_gateway_factory=sec_gateway_factory,
+            )
         except ExplorerError as exc:
             failed = True
             if len(tickers) == 1:

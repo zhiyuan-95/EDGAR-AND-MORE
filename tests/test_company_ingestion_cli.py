@@ -47,8 +47,10 @@ def test_cli_ingests_multiple_space_or_comma_separated_tickers(
         settings: IngestionSettings,
         *,
         progress: Callable[[str], None] | None = None,
+        sec_gateway_factory: Callable[[], object] | None = None,
     ) -> CompanyIngestionResult:
         assert progress is not None
+        assert sec_gateway_factory is not None
         calls.append(
             (
                 ticker,
@@ -90,8 +92,10 @@ def test_cli_continues_batch_after_one_company_fails(
         _settings: IngestionSettings,
         *,
         progress: Callable[[str], None] | None = None,
+        sec_gateway_factory: Callable[[], object] | None = None,
     ) -> CompanyIngestionResult:
         assert progress is not None
+        assert sec_gateway_factory is not None
         calls.append(ticker)
         if ticker == "FAIL":
             raise IngestionError("simulated failure")
@@ -107,6 +111,51 @@ def test_cli_continues_batch_after_one_company_fails(
     assert "AAPL: checked_no_update" in output
     assert "FAIL: Error: simulated failure" in output
     assert "MSFT: checked_no_update" in output
+
+
+def test_cli_reuses_one_sec_client_across_a_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = IngestionSettings(
+        database_path=tmp_path / "evidence.sqlite3",
+        artifact_root=tmp_path / "artifacts",
+        sec_user_agent="test@example.com",
+    )
+    monkeypatch.setattr(
+        company_ingestion.IngestionSettings,
+        "from_environment",
+        classmethod(lambda _cls: settings),
+    )
+    created_clients: list[object] = []
+
+    class FakeSecClient:
+        def __init__(self, *, user_agent: str) -> None:
+            assert user_agent == "test@example.com"
+            created_clients.append(self)
+
+    gateways: list[object] = []
+
+    def fake_ingest_company(
+        ticker: str,
+        _settings: IngestionSettings,
+        *,
+        progress: Callable[[str], None] | None = None,
+        sec_gateway_factory: Callable[[], object] | None = None,
+    ) -> CompanyIngestionResult:
+        assert progress is not None
+        assert sec_gateway_factory is not None
+        gateways.append(sec_gateway_factory())
+        return _result_for(ticker)
+
+    monkeypatch.setattr(company_ingestion, "SecClient", FakeSecClient)
+    monkeypatch.setattr(company_ingestion, "ingest_company", fake_ingest_company)
+
+    exit_code = company_ingestion.main(["AAPL", "MSFT"])
+
+    assert exit_code == 0
+    assert len(created_clients) == 1
+    assert gateways == [created_clients[0], created_clients[0]]
 
 
 def test_cli_rejects_empty_comma_only_batch(

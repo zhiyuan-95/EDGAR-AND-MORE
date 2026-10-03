@@ -242,64 +242,70 @@ def _normalized_declared_cik(value: object) -> str | None:
     return stripped.zfill(10)
 
 
-def _snapshot_registrant_ciks(
+def _snapshot_registrants_by_id(
     connection: sqlite3.Connection,
-    snapshot_id: int,
+    snapshot_ids: tuple[int, ...],
     company_cik: str,
-) -> tuple[str, ...]:
-    allowed_rows = connection.execute(
-        "SELECT cc.cik FROM evidence_snapshots AS s "
+) -> dict[int, tuple[str | None, tuple[str, ...]]]:
+    unique_snapshot_ids = tuple(dict.fromkeys(snapshot_ids))
+    if not unique_snapshot_ids:
+        return {}
+
+    placeholders = ", ".join("?" for _ in unique_snapshot_ids)
+    allowed_by_snapshot = {snapshot_id: set[str]() for snapshot_id in unique_snapshot_ids}
+    for row in connection.execute(
+        "SELECT s.id AS snapshot_id, cc.cik FROM evidence_snapshots AS s "
         "JOIN filings AS f ON f.id = s.filing_id "
         "JOIN company_ciks AS cc ON cc.company_id = f.company_id "
-        "WHERE s.id = ?",
-        (snapshot_id,),
-    ).fetchall()
-    allowed = {str(row["cik"]) for row in allowed_rows}
-    provenance = connection.execute(
-        "SELECT fp.registrant_cik FROM filing_provenance AS fp "
-        "JOIN evidence_snapshots AS s ON s.filing_id = fp.filing_id WHERE s.id = ?",
-        (snapshot_id,),
-    ).fetchone()
-    registrants: set[str] = set()
-    if provenance is not None:
-        provenance_cik = _normalized_declared_cik(provenance["registrant_cik"])
-        if provenance_cik in allowed:
-            registrants.add(provenance_cik)
-    rows = connection.execute(
-        "SELECT c.namespace_uri, f.typed_value_text, f.raw_value_text "
+        f"WHERE s.id IN ({placeholders})",
+        unique_snapshot_ids,
+    ):
+        allowed_by_snapshot[int(row["snapshot_id"])].add(str(row["cik"]))
+
+    filing_registrants: dict[int, str | None] = {
+        snapshot_id: None for snapshot_id in unique_snapshot_ids
+    }
+    registrants_by_snapshot = {snapshot_id: set[str]() for snapshot_id in unique_snapshot_ids}
+    for row in connection.execute(
+        "SELECT s.id AS snapshot_id, fp.registrant_cik "
+        "FROM evidence_snapshots AS s "
+        "JOIN filing_provenance AS fp ON fp.filing_id = s.filing_id "
+        f"WHERE s.id IN ({placeholders})",
+        unique_snapshot_ids,
+    ):
+        snapshot_id = int(row["snapshot_id"])
+        registrant_cik = str(row["registrant_cik"])
+        filing_registrants[snapshot_id] = registrant_cik
+        normalized = _normalized_declared_cik(registrant_cik)
+        if normalized in allowed_by_snapshot[snapshot_id]:
+            registrants_by_snapshot[snapshot_id].add(normalized)
+
+    for row in connection.execute(
+        "SELECT f.snapshot_id, c.namespace_uri, f.typed_value_text, f.raw_value_text "
         "FROM facts AS f JOIN concepts AS c ON c.id = f.concept_id "
-        "WHERE f.snapshot_id = ? AND f.is_nil = 0 "
+        f"WHERE f.snapshot_id IN ({placeholders}) AND f.is_nil = 0 "
         "AND c.local_name = 'EntityCentralIndexKey' "
-        "ORDER BY f.source_order",
-        (snapshot_id,),
-    ).fetchall()
-    registrants.update(
-        cik
-        for row in rows
-        if _DEI_NAMESPACE.fullmatch(str(row["namespace_uri"]).rstrip("/"))
-        if (
-            cik := _normalized_declared_cik(
-                row["typed_value_text"]
-                if row["typed_value_text"] is not None
-                else row["raw_value_text"]
-            )
+        "ORDER BY f.snapshot_id, f.source_order",
+        unique_snapshot_ids,
+    ):
+        snapshot_id = int(row["snapshot_id"])
+        if not _DEI_NAMESPACE.fullmatch(str(row["namespace_uri"]).rstrip("/")):
+            continue
+        cik = _normalized_declared_cik(
+            row["typed_value_text"]
+            if row["typed_value_text"] is not None
+            else row["raw_value_text"]
         )
-        is not None
-        and cik in allowed
-    )
+        if cik is not None and cik in allowed_by_snapshot[snapshot_id]:
+            registrants_by_snapshot[snapshot_id].add(cik)
+
     canonical_cik = _normalized_declared_cik(company_cik)
-    if not registrants and canonical_cik is not None:
-        registrants.add(canonical_cik)
-    return tuple(sorted(registrants))
-
-
-def _snapshot_filing_registrant_cik(connection: sqlite3.Connection, snapshot_id: int) -> str | None:
-    row = connection.execute(
-        "SELECT fp.registrant_cik FROM filing_provenance AS fp "
-        "JOIN evidence_snapshots AS s ON s.filing_id = fp.filing_id WHERE s.id = ?",
-        (snapshot_id,),
-    ).fetchone()
-    return str(row["registrant_cik"]) if row is not None else None
+    result: dict[int, tuple[str | None, tuple[str, ...]]] = {}
+    for snapshot_id, registrants in registrants_by_snapshot.items():
+        if not registrants and canonical_cik is not None:
+            registrants.add(canonical_cik)
+        result[snapshot_id] = (filing_registrants[snapshot_id], tuple(sorted(registrants)))
+    return result
 
 
 class EvidenceStore:
@@ -768,7 +774,6 @@ class EvidenceStore:
                 raise MappingInputError(
                     f"No active {report_kind} filing window is stored for {requested}."
                 )
-            result: list[MappingSnapshotInput] = []
             for row in rows:
                 if row["snapshot_id"] is None:
                     raise MappingInputError(
@@ -779,8 +784,15 @@ class EvidenceStore:
                         f"Snapshot {row['snapshot_id']} has no {report_kind} "
                         f"{report_rule_version} evaluation."
                     )
+            snapshot_ids = tuple(int(row["snapshot_id"]) for row in rows)
+            registrants_by_snapshot = _snapshot_registrants_by_id(
+                connection, snapshot_ids, str(company["cik"])
+            )
+            result: list[MappingSnapshotInput] = []
+            for row in rows:
                 snapshot_id = int(row["snapshot_id"])
                 self._verify_snapshot_artifacts(connection, snapshot_id)
+                registrant_cik, registrant_ciks = registrants_by_snapshot[snapshot_id]
                 result.append(
                     MappingSnapshotInput(
                         snapshot_id=snapshot_id,
@@ -793,10 +805,8 @@ class EvidenceStore:
                         report_evaluation_id=int(row["report_evaluation_id"]),
                         source_report_rule_version=str(row["rule_version"]),
                         company_cik=str(company["cik"]),
-                        registrant_cik=_snapshot_filing_registrant_cik(connection, snapshot_id),
-                        registrant_ciks=_snapshot_registrant_ciks(
-                            connection, snapshot_id, str(company["cik"])
-                        ),
+                        registrant_cik=registrant_cik,
+                        registrant_ciks=registrant_ciks,
                     )
                 )
             return tuple(result)
@@ -1897,7 +1907,6 @@ class EvidenceStore:
         ).fetchall()
         if not rows:
             raise MappingInputError(f"No active {report_kind} filing window is stored.")
-        result: list[MappingSnapshotInput] = []
         for row in rows:
             if row["snapshot_id"] is None:
                 raise MappingInputError(
@@ -1908,7 +1917,14 @@ class EvidenceStore:
                     f"Snapshot {row['snapshot_id']} has no {report_kind} "
                     f"{report_rule_version} evaluation."
                 )
+        snapshot_ids = tuple(int(row["snapshot_id"]) for row in rows)
+        registrants_by_snapshot = _snapshot_registrants_by_id(
+            connection, snapshot_ids, str(company["cik"])
+        )
+        result: list[MappingSnapshotInput] = []
+        for row in rows:
             snapshot_id = int(row["snapshot_id"])
+            registrant_cik, registrant_ciks = registrants_by_snapshot[snapshot_id]
             result.append(
                 MappingSnapshotInput(
                     snapshot_id=snapshot_id,
@@ -1921,10 +1937,8 @@ class EvidenceStore:
                     report_evaluation_id=int(row["report_evaluation_id"]),
                     source_report_rule_version=str(row["rule_version"]),
                     company_cik=str(company["cik"]),
-                    registrant_cik=_snapshot_filing_registrant_cik(connection, snapshot_id),
-                    registrant_ciks=_snapshot_registrant_ciks(
-                        connection, snapshot_id, str(company["cik"])
-                    ),
+                    registrant_cik=registrant_cik,
+                    registrant_ciks=registrant_ciks,
                 )
             )
         return tuple(result)
