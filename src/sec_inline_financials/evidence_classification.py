@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
 from arelle.XmlValidateConst import VALID
 
+from sec_inline_financials.company_lineage import ReportingTransition
 from sec_inline_financials.evidence_models import (
+    ContextDimensionRecord,
+    ContextRecord,
     FactReportStatus,
     FilingEvidenceBundle,
     ObservationRecord,
@@ -14,7 +18,9 @@ from sec_inline_financials.evidence_models import (
     ReportKind,
 )
 
-REPORT_RULE_VERSION = "report-v1"
+LEGACY_REPORT_RULE_VERSION = "report-v1"
+REPORT_RULE_VERSION = "report-v2"
+_DEI_NAMESPACE = re.compile(r"https?://xbrl\.sec\.gov/dei/\d{4}")
 
 
 def _decimals_rank(decimals: str | None) -> float:
@@ -36,6 +42,8 @@ def _eligibility_reasons(
     observation: ObservationRecord,
     bundle: FilingEvidenceBundle,
     report_kind: ReportKind,
+    rule_version: str,
+    transition_reason: tuple[str, str] | None,
 ) -> tuple[tuple[str, str], ...]:
     contexts = {context.key: context for context in bundle.contexts}
     units = {unit.key: unit for unit in bundle.units}
@@ -44,7 +52,7 @@ def _eligibility_reasons(
         reasons.append(
             _reason(
                 "LEGACY_REPORT_TOP_LEVEL_ONLY",
-                "report-v1 includes only the existing top-level Arelle fact traversal",
+                f"{rule_version} includes only the existing top-level Arelle fact traversal",
             )
         )
     if observation.concept_key is None:
@@ -116,24 +124,119 @@ def _eligibility_reasons(
                             f"duration is {duration_days} days; expected {minimum}-{maximum}",
                         )
                     )
+        if transition_reason is not None:
+            reasons.append(transition_reason)
     if observation.is_numeric and observation.unit_key not in units:
         reasons.append(_reason("MISSING_UNIT", "unitRef did not resolve uniquely"))
     return tuple(reasons)
+
+
+def _normalized_cik(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped.isdigit() or len(stripped) > 10:
+        return None
+    return stripped.zfill(10)
+
+
+def _normalized_legal_name(value: str, *, member: bool = False) -> str:
+    normalized = "".join(character.lower() for character in value if character.isalnum())
+    if member and normalized.endswith("member"):
+        normalized = normalized[: -len("member")]
+    return normalized
+
+
+def _is_predecessor_identity_dimension(
+    dimension: ContextDimensionRecord,
+    transition: ReportingTransition,
+) -> bool:
+    return (
+        dimension.member_kind == "explicit"
+        and bool(_DEI_NAMESPACE.fullmatch(dimension.axis_namespace_uri.rstrip("/")))
+        and dimension.axis_local_name == "LegalEntityAxis"
+        and dimension.explicit_member_local_name is not None
+        and _normalized_legal_name(dimension.explicit_member_local_name, member=True)
+        == _normalized_legal_name(transition.predecessor.legal_name)
+    )
+
+
+def _transition_context(
+    context: ContextRecord,
+    transition: ReportingTransition | None,
+) -> tuple[tuple[ContextDimensionRecord, ...], bool, tuple[str, str] | None]:
+    if transition is None:
+        return context.dimensions, False, None
+    entity_cik = _normalized_cik(context.entity_identifier)
+    predecessor_cik = _normalized_cik(transition.predecessor.cik)
+    successor_cik = _normalized_cik(transition.successor.cik)
+    if entity_cik == predecessor_cik:
+        return context.dimensions, False, None
+    matching_dimensions = tuple(
+        dimension
+        for dimension in context.dimensions
+        if _is_predecessor_identity_dimension(dimension, transition)
+    )
+    if entity_cik == successor_cik and len(matching_dimensions) == 1:
+        identity_dimension = matching_dimensions[0]
+        return (
+            tuple(
+                dimension for dimension in context.dimensions if dimension is not identity_dimension
+            ),
+            True,
+            None,
+        )
+    return (
+        context.dimensions,
+        False,
+        _reason(
+            "TRANSITION_NON_REPORTING_ENTITY",
+            "context does not identify the verified predecessor for this pre-transition period",
+        ),
+    )
 
 
 def classify_report(
     bundle: FilingEvidenceBundle,
     report_kind: ReportKind,
     rule_version: str = REPORT_RULE_VERSION,
+    *,
+    transition: ReportingTransition | None = None,
 ) -> ReportEvaluation:
-    """Apply the legacy report rules without removing any observed filing fact."""
+    """Classify facts while retaining every observed filing fact as evidence."""
+    if rule_version not in {LEGACY_REPORT_RULE_VERSION, REPORT_RULE_VERSION}:
+        raise ValueError(f"Unsupported report rule version: {rule_version}")
+    active_transition = transition
+    if (
+        rule_version == LEGACY_REPORT_RULE_VERSION
+        or transition is None
+        or bundle.filing.report_date >= transition.effective_date
+        or _normalized_cik(bundle.filing.registrant_cik)
+        != _normalized_cik(transition.successor.cik)
+    ):
+        active_transition = None
     contexts = {context.key: context for context in bundle.contexts}
     units = {unit.key: unit for unit in bundle.units}
     statuses: dict[str, FactReportStatus] = {}
     primary_by_concept: dict[str, list[ObservationRecord]] = defaultdict(list)
+    transition_wrapper_removed: dict[str, bool] = {}
 
     for observation in sorted(bundle.observations, key=lambda item: item.source_order):
-        reasons = _eligibility_reasons(observation, bundle, report_kind)
+        context = contexts.get(observation.context_key or "")
+        effective_dimensions: tuple[ContextDimensionRecord, ...] = ()
+        wrapper_removed = False
+        transition_reason = None
+        if context is not None:
+            effective_dimensions, wrapper_removed, transition_reason = _transition_context(
+                context, active_transition
+            )
+        reasons = _eligibility_reasons(
+            observation,
+            bundle,
+            report_kind,
+            rule_version,
+            transition_reason,
+        )
         if reasons:
             statuses[observation.key] = FactReportStatus(
                 fact_key=observation.key,
@@ -142,12 +245,13 @@ def classify_report(
             )
             continue
         context = contexts[observation.context_key or ""]
-        if context.dimensions:
+        if effective_dimensions:
             statuses[observation.key] = FactReportStatus(
                 fact_key=observation.key,
                 evidence_role="dimensional",
             )
             continue
+        transition_wrapper_removed[observation.key] = wrapper_removed
         primary_by_concept[observation.concept_key or ""].append(observation)
 
     issues: list[ReconciliationIssueRecord] = []
@@ -205,6 +309,8 @@ def classify_report(
                 f"collapsed {len(candidates)} exact duplicates; selected context "
                 f"{context_id} with decimals {chosen.decimals or 'not reported'}"
             )
+        if transition_wrapper_removed.get(chosen.key, False):
+            note += "; removed verified transition LegalEntityAxis wrapper"
         statuses[chosen.key] = FactReportStatus(
             fact_key=chosen.key,
             evidence_role="selected_primary",

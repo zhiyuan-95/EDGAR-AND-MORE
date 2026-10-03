@@ -5,7 +5,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sec_inline_financials.evidence_classification import classify_report
+from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION, classify_report
 from sec_inline_financials.evidence_models import (
     ExtractionProfile,
     FilingEvidenceBundle,
@@ -75,7 +75,13 @@ class EvidenceIngestionService:
         quarterly = self._sec_client.discover_quarterly_inline_filings(
             company, count=quarterly_count
         )
-        return self.ingest_selected_window(company, annual=annual, quarterly=quarterly)
+        return self.ingest_selected_window(
+            company,
+            annual=annual,
+            quarterly=quarterly,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+        )
 
     def ingest_selected_window(
         self,
@@ -83,14 +89,18 @@ class EvidenceIngestionService:
         *,
         annual: list[Filing],
         quarterly: list[Filing],
+        annual_count: int | None = None,
+        quarterly_count: int | None = None,
     ) -> RunOutcome:
         """Persist an already discovered filing window without another SEC lookup."""
         run_id = self._store.create_processing_run(
             company,
             purpose="explicit-company-window-ingest",
             requested_window={
-                "annual_count": len(annual),
-                "quarterly_count": len(quarterly),
+                "annual_count": len(annual) if annual_count is None else annual_count,
+                "quarterly_count": len(quarterly) if quarterly_count is None else quarterly_count,
+                "annual_found": len(annual),
+                "quarterly_found": len(quarterly),
                 "accessions": [filing.accession for filing in (*annual, *quarterly)],
             },
         )
@@ -127,12 +137,17 @@ class EvidenceIngestionService:
             )
             if reusable is not None:
                 stored_evaluation = self._store.get_report_evaluation(
-                    reusable.snapshot_id, report_kind, "report-v1"
+                    reusable.snapshot_id, report_kind, REPORT_RULE_VERSION
                 )
                 if stored_evaluation is None:
                     bundle = self._store.load_snapshot(reusable.snapshot_id)
                     self._store.save_report_evaluation(
-                        reusable.snapshot_id, classify_report(bundle, report_kind)
+                        reusable.snapshot_id,
+                        classify_report(
+                            bundle,
+                            report_kind,
+                            transition=self._store.reporting_transition_for_filing(bundle.filing),
+                        ),
                     )
                 self._store.mark_attempt_reused(attempt_id, reusable.snapshot_id)
                 return FilingOutcome(
@@ -145,7 +160,11 @@ class EvidenceIngestionService:
             bundle = self._processor.extract_evidence(company, filing, capture_area)
             if extraction_profile_hash(bundle) != profile_hash:
                 raise ValueError("Processor extraction profile changed during one filing attempt.")
-            evaluation = classify_report(bundle, report_kind)
+            evaluation = classify_report(
+                bundle,
+                report_kind,
+                transition=self._store.reporting_transition_for_filing(bundle.filing),
+            )
             installed = self._install_bundle_artifacts(bundle, attempt_identity=attempt_identity)
             result = self._store.save_snapshot(bundle, evaluation, attempt_id, installed)
             self._store.artifacts.cleanup_staging(attempt_identity)

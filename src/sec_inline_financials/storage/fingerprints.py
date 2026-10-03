@@ -101,6 +101,8 @@ def payload_json(bundle: FilingEvidenceBundle) -> str:
             "report_date": bundle.filing.report_date,
             "primary_document": bundle.filing.primary_document,
             "source_url": bundle.filing.url,
+            "registrant_cik": bundle.filing.registrant_cik,
+            "archive_owner_cik": bundle.filing.archive_owner_cik,
         },
         "fiscal_year": bundle.fiscal_year,
         "fiscal_period": bundle.fiscal_period,

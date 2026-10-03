@@ -145,6 +145,8 @@ def test_arelle_processor_loads_retry_plugin(
         url=(
             "https://www.sec.gov/Archives/edgar/data/1222333/000143774924036161/gld20240930_10k.htm"
         ),
+        registrant_cik=company.cik,
+        archive_owner_cik=company.cik,
     )
 
     with pytest.raises(ProcessingError, match="could not load"):

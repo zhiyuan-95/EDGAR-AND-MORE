@@ -10,17 +10,22 @@ The primary console command is:
 
 ```powershell
 uv run --no-sync sec-inline-financials AAPL
+uv run --no-sync sec-inline-financials AAPL MSFT NVDA
+uv run --no-sync sec-inline-financials AAPL,MSFT,NVDA
 ```
 
-It runs the production company-ingestion path, writes flushed progress to stderr,
-then writes the company/run summary, elapsed time, and resolved evidence paths to
-stdout.
+It runs the production company-ingestion path for one or more tickers, writes
+flushed progress to stderr, then writes each company/run summary, elapsed time,
+and resolved evidence paths to stdout. Multi-company ingestion is sequential; if
+one ticker fails, the command reports that error, continues with the remaining
+tickers, and exits nonzero after the batch finishes.
 
 The lower-level console aliases run the same ingestion without the final timing and
 path lines:
 
 ```powershell
 uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
@@ -93,12 +98,21 @@ When a refresh is required:
 6. Quarterly selection keeps the latest eligible `isInlineXBRL = true` exact-form
    `10-Q` filings.
 
+The requested counts are upper bounds, not a completeness gate. If SEC history has
+fewer eligible filings than requested for either form, discovery returns every
+eligible filing it found. The shortage is reported as a coverage warning and does
+not count as an ingestion failure. Each found filing still continues through Arelle,
+evidence storage, classification, and Direct Mapping. Annual and quarterly mapping
+are evaluated independently, so an empty form does not prevent mapping the other
+non-empty form. No placeholder filing or period is created for missing history.
+
 `10-K/A` and `10-Q/A` do not consume window positions because discovery requests
 exact forms. SEC submissions provide identity and filing URLs; financial values come
 from the filing-scoped Arelle models, not the SEC Company Facts API.
 
-If SEC discovery raises `DiscoveryError` and no usable evidence exists, the error
-propagates. If usable evidence already exists, return
+If SEC access or metadata parsing raises `DiscoveryError` and no usable evidence
+exists, the error propagates. A count shortage by itself does not raise
+`DiscoveryError`. If usable evidence already exists, return
 `refresh_failed_using_local_data` and keep the published local window unchanged.
 
 ## 5. Per-filing Arelle processing
@@ -243,7 +257,7 @@ stay on stdout.
 `sec-inline-financials` also prints elapsed time and the resolved evidence root,
 content-addressed object directory, and SQLite path after the ingestion command
 returns. `sec-inline-financials-ingest` and the module entry point omit those extra
-lines.
+lines. All forms accept multiple tickers separated by spaces or commas.
 
 Selected filings run sequentially. Arelle sessions share process state and must not
 be run concurrently in threads.

@@ -24,6 +24,7 @@ from sec_inline_financials.evidence_models import (
 )
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.storage import EvidenceStore
+from sec_inline_financials.storage.migrations import _load_migrations
 
 
 def _normalized_migration_bytes(raw: bytes) -> bytes:
@@ -56,7 +57,7 @@ def test_schema_five_database_upgrades_to_compressed_text_payloads(tmp_path: Pat
 
     store = EvidenceStore(database_path, tmp_path)
 
-    assert store.initialize() == 6
+    assert store.initialize(allow_schema_upgrade=True) == _load_migrations()[-1].version
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT count(*) FROM text_payloads").fetchone() == (0,)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(facts)").fetchall()}
@@ -68,7 +69,7 @@ def test_only_identical_string_payload_is_compacted_and_public_reads_reconstruct
 ) -> None:
     database_path = tmp_path / "evidence.sqlite3"
     store = EvidenceStore(database_path, tmp_path)
-    assert store.initialize() == 6
+    assert store.initialize() == _load_migrations()[-1].version
     company = Company(ticker="TEST", cik="0000000001", name="Test Company")
     filing = Filing(
         accession="0000000001-26-000001",
@@ -77,6 +78,8 @@ def test_only_identical_string_payload_is_compacted_and_public_reads_reconstruct
         form="10-K",
         primary_document="test.htm",
         url="https://www.sec.gov/Archives/test.htm",
+        registrant_cik=company.cik,
+        archive_owner_cik=company.cik,
     )
     text = "Management discussion " * 1_000
     compacted = ObservationRecord(

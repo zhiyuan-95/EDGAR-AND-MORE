@@ -134,6 +134,8 @@ class MappingSnapshotInput:
     report_evaluation_id: int
     source_report_rule_version: str
     company_cik: str
+    registrant_cik: str | None = None
+    registrant_ciks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -197,8 +199,10 @@ class MetricEvaluationRef:
 @dataclass(frozen=True)
 class CompanyMappingResult:
     company: Company
-    annual: MetricEvaluationRef
-    quarterly: MetricEvaluationRef
+    annual: MetricEvaluationRef | None
+    quarterly: MetricEvaluationRef | None
+    annual_error: str | None = None
+    quarterly_error: str | None = None
 
 
 def active_window_hash(snapshots: tuple[MappingSnapshotInput, ...]) -> str:
@@ -210,6 +214,8 @@ def active_window_hash(snapshots: tuple[MappingSnapshotInput, ...]) -> str:
             "snapshot_id": snapshot.snapshot_id,
             "payload_hash": snapshot.payload_hash,
             "report_evaluation_id": snapshot.report_evaluation_id,
+            "registrant_cik": snapshot.registrant_cik,
+            "registrant_ciks": sorted(snapshot.registrant_ciks),
         }
         for snapshot in sorted(snapshots, key=lambda item: item.active_window_rank)
     ]

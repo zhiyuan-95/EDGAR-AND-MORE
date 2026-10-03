@@ -14,6 +14,10 @@ class IngestionError(ExplorerError):
     """A company ingestion could not publish any usable filing evidence."""
 
 
+class LineageError(ExplorerError):
+    """A CIK lineage request is invalid, conflicting, or stale."""
+
+
 class EvidenceStorageError(ExplorerError):
     """Base class for durable evidence storage failures."""
 

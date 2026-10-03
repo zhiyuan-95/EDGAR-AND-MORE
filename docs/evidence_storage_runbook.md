@@ -34,17 +34,21 @@ For the production request-triggered workflow, run:
 
 ```powershell
 uv run --no-sync sec-inline-financials AAPL
+uv run --no-sync sec-inline-financials AAPL MSFT NVDA
+uv run --no-sync sec-inline-financials AAPL,MSFT,NVDA
 ```
 
 This command writes flushed stage/per-filing progress to stderr. It writes the final
 company and run summaries, elapsed time, evidence root, content-addressed artifact
 directory, and SQLite path to stdout. Use `--annual-count`, `--quarterly-count`, and
-`--force` when needed.
+`--force` when needed. Multi-company batches run sequentially, continue after a
+per-company failure, and exit nonzero if any requested ticker fails.
 
 The lower-level aliases omit the final timing and path lines:
 
 ```powershell
 uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
@@ -69,6 +73,38 @@ profile stores new `evidence-v2` snapshots with `filing_sections`.
 When processing occurs, `result.run` contains a run ID and one stored, reused, or
 failed outcome per filing. Each filing commits independently. A failed filing cannot
 expose a partial snapshot, and earlier completed filings remain usable.
+
+## CIK lineage maintenance
+
+Use the lineage command only when the first CIK already belongs to a stored company
+and the second CIK is its exact legal predecessor:
+
+```powershell
+uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK
+```
+
+The command obtains the legal name for both CIKs from the SEC, prints the canonical
+company, complete existing lineage, and exact proposed predecessor-to-successor edge,
+then asks for `y/n`. Only `y` or `Y` saves the edge and starts ingestion. The two CIKs
+remain distinct registrants; filing provenance records the registrant CIK and SEC
+archive-owner CIK for every stored accession.
+
+Discovery searches the canonical current CIK first and then walks the stored lineage
+toward older predecessors. A predecessor fills only an annual-year or quarterly-date
+slot absent from every higher-priority registrant. A selected current filing that
+fails processing is reported as a failure; it is not replaced by a same-period
+predecessor filing. Only filings with completed evidence snapshots can enter the
+published active window.
+
+For a chain `B -> A`, add older predecessor `C` by supplying `B C`; `B` is the current
+oldest member. Exact-edge reruns are idempotent and retry ordinary ingestion. If
+ingestion fails after approval, the edge intentionally remains committed, so rerun
+the same command and approve it again. Version one has no unlink command. Back up and
+audit an important evidence root before creating a relationship; correcting a wrong
+edge requires restoring that backup or a separately reviewed repair procedure.
+
+The command fills the configured five-annual/twelve-quarterly window. It does not
+download the predecessor's complete SEC archive.
 
 Arelle uses the pinned SEC transformation plugin plus a local retry plugin. The
 retry is limited to HTTP 503 responses for HTTPS filing extension-taxonomy `.xsd`

@@ -8,9 +8,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from sec_inline_financials.arelle_adapter import ArelleProcessor
+from sec_inline_financials.company_lineage import (
+    CompanyLineage,
+    RegistrantIdentity,
+    build_company_lineage,
+    normalize_cik,
+)
 from sec_inline_financials.config import load_sec_user_agent
 from sec_inline_financials.errors import DiscoveryError, ExplorerError, IngestionError
 from sec_inline_financials.evidence_ingestion import (
@@ -18,11 +24,12 @@ from sec_inline_financials.evidence_ingestion import (
     EvidenceProcessor,
     SecGateway,
 )
-from sec_inline_financials.evidence_models import RunOutcome, StoredCompanyState
+from sec_inline_financials.evidence_models import FilingOutcome, RunOutcome, StoredCompanyState
 from sec_inline_financials.mapping_models import CompanyMappingResult
 from sec_inline_financials.mapping_service import DirectMappingService
 from sec_inline_financials.models import Company, Filing
-from sec_inline_financials.sec_client import SecClient
+from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
+from sec_inline_financials.sec_client import DiscoveredCompanyWindow, SecClient
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
@@ -30,10 +37,21 @@ IngestionStatus = Literal[
     "initialized",
     "updated",
     "checked_no_update",
+    "checked_no_filings",
     "reused_local",
     "refresh_failed_using_local_data",
 ]
 _TICKER_PATTERN = re.compile(r"[A-Z0-9.-]{1,10}")
+
+
+class CompanySecGateway(SecGateway, Protocol):
+    def discover_company_window(
+        self,
+        lineage: CompanyLineage,
+        *,
+        annual_count: int,
+        quarterly_count: int,
+    ) -> DiscoveredCompanyWindow: ...
 
 
 @dataclass(frozen=True)
@@ -77,6 +95,7 @@ class CompanyIngestionResult:
     active_accessions: tuple[str, ...] = ()
     run: RunOutcome | None = None
     error: str | None = None
+    coverage_warning: str | None = None
     mapping: CompanyMappingResult | None = None
     mapping_error: str | None = None
 
@@ -88,7 +107,7 @@ class CompanyIngestionService:
         self,
         *,
         store: EvidenceStore,
-        sec_gateway_factory: Callable[[], SecGateway],
+        sec_gateway_factory: Callable[[], CompanySecGateway],
         processor_factory: Callable[[], EvidenceProcessor],
         today_fn: Callable[[], date] = date.today,
         progress: Callable[[str], None] | None = None,
@@ -136,10 +155,7 @@ class CompanyIngestionService:
         )
         if previous is not None and not should_check_sec:
             self._progress(f"Stored evidence is current for {requested}; SEC check skipped.")
-            mapping, mapping_error = self._evaluate_mapping(
-                requested,
-                require_complete_window=annual_count == 5 and quarterly_count == 12,
-            )
+            mapping, mapping_error = self._evaluate_mapping(requested)
             return CompanyIngestionResult(
                 company=previous.company,
                 status="reused_local",
@@ -165,8 +181,21 @@ class CompanyIngestionService:
                     f"Stored ticker {requested} belongs to CIK {previous.company.cik}, "
                     f"but SEC resolved it to {company.cik}."
                 )
-            annual = gateway.discover_annual_inline_filings(company, count=annual_count)
-            quarterly = gateway.discover_quarterly_inline_filings(company, count=quarterly_count)
+            lineage = self._store.load_company_lineage(company.cik)
+            if lineage is None:
+                lineage = build_company_lineage(
+                    company_id=0,
+                    canonical_current_cik=company.cik,
+                    members=(RegistrantIdentity(company.cik, company.name),),
+                    edges=(),
+                )
+            window = gateway.discover_company_window(
+                lineage,
+                annual_count=annual_count,
+                quarterly_count=quarterly_count,
+            )
+            annual = list(window.annual)
+            quarterly = list(window.quarterly)
         except DiscoveryError as exc:
             if previous is None or not previous.has_evidence:
                 raise
@@ -178,48 +207,130 @@ class CompanyIngestionService:
                 error=exc,
             )
 
+        return self._ingest_resolved_company(
+            company=company,
+            previous=previous,
+            gateway=gateway,
+            annual=annual,
+            quarterly=quarterly,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+            annual_due=annual_due,
+            quarterly_due=quarterly_due,
+            today=today,
+        )
+
+    def ingest_company_cik(
+        self,
+        successor_cik: str,
+        *,
+        annual_count: int = 5,
+        quarterly_count: int = 12,
+    ) -> CompanyIngestionResult:
+        """Ingest one already-stored company through its complete CIK lineage."""
+        normalized = normalize_cik(successor_cik)
+        if annual_count < 1 or quarterly_count < 1:
+            raise IngestionError("Annual and quarterly filing counts must both be positive.")
+        self._store.initialize()
+        previous = self._store.get_company_state_by_cik(normalized)
+        lineage = self._store.load_company_lineage(normalized)
+        if previous is None or lineage is None:
+            raise IngestionError(
+                f"Successor CIK {normalized} does not belong to a stored company lineage."
+            )
+        gateway = self._sec_gateway_factory()
+        window = gateway.discover_company_window(
+            lineage,
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+        )
+        return self._ingest_resolved_company(
+            company=previous.company,
+            previous=previous,
+            gateway=gateway,
+            annual=list(window.annual),
+            quarterly=list(window.quarterly),
+            annual_count=annual_count,
+            quarterly_count=quarterly_count,
+            annual_due=True,
+            quarterly_due=True,
+            today=self._today(),
+        )
+
+    def _ingest_resolved_company(
+        self,
+        *,
+        company: Company,
+        previous: StoredCompanyState | None,
+        gateway: SecGateway,
+        annual: list[Filing],
+        quarterly: list[Filing],
+        annual_count: int,
+        quarterly_count: int,
+        annual_due: bool,
+        quarterly_due: bool,
+        today: date,
+    ) -> CompanyIngestionResult:
+        """Process, publish, and map one already-resolved current-first filing window."""
         known_accessions = set(previous.known_accessions if previous is not None else ())
         selected = (*annual, *quarterly)
+        coverage_warning = _coverage_warning(
+            annual_found=len(annual),
+            annual_requested=annual_count,
+            quarterly_found=len(quarterly),
+            quarterly_requested=quarterly_count,
+        )
         self._progress(
             f"Selected filings for {company.ticker}: "
             f"{len(annual)} annual, {len(quarterly)} quarterly."
         )
+        if coverage_warning is not None:
+            self._progress(coverage_warning)
         self._progress(f"Processing selected filings for {company.ticker}: {len(selected)} total.")
         new_accessions = tuple(
             filing.accession for filing in selected if filing.accession not in known_accessions
         )
-        evidence_service = EvidenceIngestionService(
-            sec_client=gateway,
-            processor=self._processor_factory(),
-            store=self._store,
-            progress=self._progress,
-        )
-        run = evidence_service.ingest_selected_window(
-            company,
-            annual=annual,
-            quarterly=quarterly,
-        )
-        failed = tuple(outcome for outcome in run.filings if outcome.status == "failed")
-        if run.status == "failed":
-            error = _failure_summary(failed)
-            if previous is not None and previous.has_evidence:
-                return _failed_refresh_result(
-                    previous,
-                    annual_due=annual_due,
-                    quarterly_due=quarterly_due,
-                    error=IngestionError(error),
-                    run=run,
+        run: RunOutcome | None = None
+        failed: tuple[FilingOutcome, ...] = ()
+        if selected:
+            evidence_service = EvidenceIngestionService(
+                sec_client=gateway,
+                processor=self._processor_factory(),
+                store=self._store,
+                progress=self._progress,
+            )
+            run = evidence_service.ingest_selected_window(
+                company,
+                annual=annual,
+                quarterly=quarterly,
+                annual_count=annual_count,
+                quarterly_count=quarterly_count,
+            )
+            failed = tuple(outcome for outcome in run.filings if outcome.status == "failed")
+            if run.status == "failed":
+                error = _failure_summary(failed)
+                if previous is not None and previous.has_evidence:
+                    return _failed_refresh_result(
+                        previous,
+                        annual_due=annual_due,
+                        quarterly_due=quarterly_due,
+                        error=IngestionError(error),
+                        run=run,
+                    )
+                raise IngestionError(
+                    f"Initial ingestion produced no usable filing evidence: {error}"
                 )
-            raise IngestionError(f"Initial ingestion produced no usable filing evidence: {error}")
 
         new_accession_set = set(new_accessions)
         new_forms = {filing.form for filing in selected if filing.accession in new_accession_set}
         failed_accessions = {outcome.accession for outcome in failed}
         failed_forms = {filing.form for filing in selected if filing.accession in failed_accessions}
-        latest_annual = max(annual, key=lambda filing: filing.filing_date)
-        latest_quarterly = max(quarterly, key=lambda filing: filing.filing_date)
-        latest_quarterly_period = self._store.fiscal_period_for_accession(
-            latest_quarterly.accession
+        latest_annual = max(annual, key=lambda filing: filing.filing_date, default=None)
+        latest_quarterly = max(quarterly, key=lambda filing: filing.filing_date, default=None)
+        latest_quarterly_period = (
+            self._store.fiscal_period_for_accession(latest_quarterly.accession)
+            if latest_quarterly is not None
+            else None
         )
         next_annual = _next_check_after_refresh(
             previous=previous,
@@ -252,7 +363,9 @@ class CompanyIngestionService:
                 outcome.accession: outcome.snapshot_id
                 for outcome in run.filings
                 if outcome.snapshot_id is not None
-            },
+            }
+            if run is not None
+            else {},
             next_check_date_10k=next_annual,
             next_check_date_10q=next_quarterly,
         )
@@ -260,16 +373,16 @@ class CompanyIngestionService:
         if current is None:
             raise IngestionError("Company refresh committed without a readable company state.")
 
-        if previous is None or not previous.has_evidence:
-            status: IngestionStatus = "initialized"
+        status: IngestionStatus
+        if not selected:
+            status = "checked_no_filings"
+        elif previous is None or not previous.has_evidence:
+            status = "initialized"
         elif new_accessions:
             status = "updated"
         else:
             status = "checked_no_update"
-        mapping, mapping_error = self._evaluate_mapping(
-            company.ticker,
-            require_complete_window=annual_count == 5 and quarterly_count == 12,
-        )
+        mapping, mapping_error = self._evaluate_mapping(company.ticker)
         self._progress(f"Completed ingestion for {company.ticker}: {status}.")
         return CompanyIngestionResult(
             company=company,
@@ -281,6 +394,7 @@ class CompanyIngestionService:
             active_accessions=current.active_accessions,
             run=run,
             error=_failure_summary(failed) if failed else None,
+            coverage_warning=coverage_warning,
             mapping=mapping,
             mapping_error=mapping_error,
         )
@@ -288,14 +402,12 @@ class CompanyIngestionService:
     def _evaluate_mapping(
         self,
         ticker: str,
-        *,
-        require_complete_window: bool,
     ) -> tuple[CompanyMappingResult | None, str | None]:
         self._progress(f"Evaluating stored Direct Mapping for {ticker}...")
         try:
             result = DirectMappingService(self._store).evaluate_company(
                 ticker,
-                require_complete_window=require_complete_window,
+                require_complete_window=False,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -307,27 +419,43 @@ class CompanyIngestionService:
         return result, None
 
 
+def _require_sec_user_agent(settings: IngestionSettings) -> str:
+    if settings.sec_user_agent:
+        return settings.sec_user_agent
+    raise DiscoveryError("SEC_USER_AGENT is required when a company refresh must contact the SEC.")
+
+
+def _cached_sec_gateway_factory(
+    settings: IngestionSettings,
+) -> Callable[[], CompanySecGateway]:
+    sec_client: SecClient | None = None
+
+    def get_sec_client() -> CompanySecGateway:
+        nonlocal sec_client
+        if sec_client is None:
+            sec_client = SecClient(user_agent=_require_sec_user_agent(settings))
+        return sec_client
+
+    return get_sec_client
+
+
 def ingest_company(
     ticker: str,
     settings: IngestionSettings,
     *,
     progress: Callable[[str], None] | None = None,
+    sec_gateway_factory: Callable[[], CompanySecGateway] | None = None,
 ) -> CompanyIngestionResult:
     """Ingest or update one company, contacting the SEC only when required."""
     store = EvidenceStore(settings.database_path, settings.artifact_root)
-
-    def require_user_agent() -> str:
-        if settings.sec_user_agent:
-            return settings.sec_user_agent
-        raise DiscoveryError(
-            "SEC_USER_AGENT is required when a company refresh must contact the SEC."
-        )
+    if sec_gateway_factory is None:
+        sec_gateway_factory = _cached_sec_gateway_factory(settings)
 
     service = CompanyIngestionService(
         store=store,
-        sec_gateway_factory=lambda: SecClient(user_agent=require_user_agent()),
+        sec_gateway_factory=sec_gateway_factory,
         processor_factory=lambda: ArelleProcessor(
-            user_agent=require_user_agent(),
+            user_agent=_require_sec_user_agent(settings),
             cache_directory=settings.cache_directory,
         ),
         progress=progress,
@@ -368,6 +496,27 @@ def _failure_summary(failures: Sequence[object]) -> str:
     return "; ".join(descriptions) or "all filing attempts failed"
 
 
+def _coverage_warning(
+    *,
+    annual_found: int,
+    annual_requested: int,
+    quarterly_found: int,
+    quarterly_requested: int,
+) -> str | None:
+    shortages: list[str] = []
+    if annual_found < annual_requested:
+        shortages.append(f"annual {annual_found}/{annual_requested}")
+    if quarterly_found < quarterly_requested:
+        shortages.append(f"quarterly {quarterly_found}/{quarterly_requested}")
+    if not shortages:
+        return None
+    total = annual_found + quarterly_found
+    return (
+        "SEC returned fewer eligible filings than requested "
+        f"({', '.join(shortages)}); processing all {total} filing(s) found."
+    )
+
+
 def _check_is_due(next_check: date | None, today: date) -> bool:
     return next_check is None or today >= next_check
 
@@ -376,7 +525,7 @@ def _next_check_after_refresh(
     *,
     previous: StoredCompanyState | None,
     form: Literal["10-K", "10-Q"],
-    latest_filing: Filing,
+    latest_filing: Filing | None,
     fiscal_period: str | None,
     check_was_due: bool,
     discovered_new: bool,
@@ -389,6 +538,8 @@ def _next_check_after_refresh(
         if previous is not None
         else None
     )
+    if latest_filing is None:
+        return _next_market_day(checked_on)
     if previous is None or not previous.has_evidence or discovered_new:
         months = 12 if form == "10-K" else 6 if (fiscal_period or "").upper() == "Q3" else 3
         return _previous_market_day(_add_months(latest_filing.filing_date, months))
@@ -485,24 +636,27 @@ def _print_cli_progress(message: str) -> None:
     print(f"[progress] {message}", file=sys.stderr, flush=True)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest or update retained SEC filing evidence.")
-    parser.add_argument("ticker")
-    parser.add_argument("--annual-count", type=int, default=5)
-    parser.add_argument("--quarterly-count", type=int, default=12)
-    parser.add_argument("--force", action="store_true", help="Check SEC even when not yet due.")
-    args = parser.parse_args(argv)
-    settings = replace(
-        IngestionSettings.from_environment(),
-        annual_count=args.annual_count,
-        quarterly_count=args.quarterly_count,
-        force_refresh=args.force,
-    )
-    try:
-        result = ingest_company(args.ticker, settings, progress=_print_cli_progress)
-    except ExplorerError as exc:
-        print(f"Error: {exc}")
-        return 1
+def _normalize_cli_tickers(values: Sequence[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for part in value.split(","):
+            ticker = part.strip().upper()
+            if not ticker:
+                continue
+            if _TICKER_PATTERN.fullmatch(ticker) is None:
+                raise IngestionError(
+                    f"Invalid ticker {ticker!r}; use 1-10 letters, digits, dots, or hyphens."
+                )
+            if ticker not in seen:
+                normalized.append(ticker)
+                seen.add(ticker)
+    if not normalized:
+        raise IngestionError("Provide at least one company ticker.")
+    return tuple(normalized)
+
+
+def _print_cli_result(result: CompanyIngestionResult) -> None:
     print(f"{result.company.ticker}: {result.status}")
     if result.run is not None:
         print(f"Run: {result.run.run_id} ({result.run.status})")
@@ -510,18 +664,77 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{filing.accession}: {filing.status}")
     if result.error:
         print(f"Warning: {result.error}")
+    if result.coverage_warning:
+        print(f"Coverage warning: {result.coverage_warning}")
     if result.mapping is not None:
-        print(
-            f"Annual mapping: {result.mapping.annual.reported_count} reported, "
-            f"{result.mapping.annual.missing_count} missing"
-        )
-        print(
-            f"Quarterly mapping: {result.mapping.quarterly.reported_count} reported, "
-            f"{result.mapping.quarterly.missing_count} missing"
-        )
+        if result.mapping.annual is not None:
+            print(
+                f"Annual mapping: {result.mapping.annual.reported_count} reported, "
+                f"{result.mapping.annual.missing_count} missing"
+            )
+        else:
+            print(f"Annual mapping: not run ({result.mapping.annual_error})")
+        if result.mapping.quarterly is not None:
+            print(
+                f"Quarterly mapping: {result.mapping.quarterly.reported_count} reported, "
+                f"{result.mapping.quarterly.missing_count} missing"
+            )
+        else:
+            print(f"Quarterly mapping: not run ({result.mapping.quarterly_error})")
     if result.mapping_error:
         print(f"Mapping warning: {result.mapping_error}")
-    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Ingest or update retained SEC filing evidence.")
+    parser.add_argument(
+        "tickers",
+        nargs="+",
+        help="One or more tickers, separated by spaces or commas.",
+    )
+    parser.add_argument("--annual-count", type=int, default=5)
+    parser.add_argument("--quarterly-count", type=int, default=12)
+    parser.add_argument("--force", action="store_true", help="Check SEC even when not yet due.")
+    args = parser.parse_args(argv)
+    try:
+        tickers = _normalize_cli_tickers(args.tickers)
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    settings = replace(
+        IngestionSettings.from_environment(),
+        annual_count=args.annual_count,
+        quarterly_count=args.quarterly_count,
+        force_refresh=args.force,
+    )
+    store = EvidenceStore(settings.database_path, settings.artifact_root)
+    try:
+        if not ensure_schema_upgrade_approved(store):
+            return 0
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    sec_gateway_factory = _cached_sec_gateway_factory(settings)
+    failed = False
+    for ticker in tickers:
+        try:
+            result = ingest_company(
+                ticker,
+                settings,
+                progress=_print_cli_progress,
+                sec_gateway_factory=sec_gateway_factory,
+            )
+        except ExplorerError as exc:
+            failed = True
+            if len(tickers) == 1:
+                print(f"Error: {exc}")
+            else:
+                print(f"{ticker}: Error: {exc}")
+            continue
+        _print_cli_result(result)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
