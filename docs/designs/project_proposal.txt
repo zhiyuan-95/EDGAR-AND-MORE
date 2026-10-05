@@ -40,7 +40,9 @@ The current application already:
   Archives, with three bounded backoff attempts;
 - detaches every Arelle-exposed observation, context, unit, dimension, validation message, and supported calculation relationship before the Arelle session closes;
 - retains exact filing-owned source resources, the Arelle log, and a source manifest in a SHA-256 content-addressed archive;
-- stores immutable, normalized filing snapshots and versioned report classifications in SQLite; and
+- stores immutable, normalized filing snapshots and versioned report classifications in SQLite;
+- searches an operator-verified current-to-predecessor CIK lineage when the current registrant cannot fill the requested window, while retaining registrant and archive-owner provenance;
+- requires explicit operator approval before applying pending migrations to an existing evidence database; and
 - extracts required narrative sections from the retained primary document into the same snapshot.
 
 The current storage profile is `evidence-v2`. It preserves facts excluded by the report filters and records extracted, missing, or unparseable narrative sections explicitly. A compatible snapshot can be reused only after its linked artifacts pass integrity checks. A newer extraction profile creates a new snapshot without rewriting the older one.
@@ -80,6 +82,10 @@ Explicit stored-evidence inspectors
         +--> verified retained document --> narrative-section TXT report
 ```
 
+The diagram retains its original `report-v1` label as a historical architecture
+record. The current inspector replays persisted `report-v2` evaluations; prior v1
+evaluations remain available for audit.
+
 The browser frontend communicates with the local Python backend. The backend owns SQLite connections, filesystem access, SEC/Arelle processing, mapping operations, and downloads. This allows the frontend to use local data without coupling it directly to the database schema.
 
 ### 3.1 Evidence storage
@@ -109,9 +115,10 @@ The current reports guide this storage model by demonstrating selected facts, di
 Mapping runs separately for each company, Target Metric, and exact annual or quarterly period.
 
 The implemented first stage performs Direct Mapping with frozen
-`direct-mapping-v1` rules matching the seven applicable entries in
+`direct-mapping-v2` rules matching the seven applicable entries in
 [`docs/mapping.txt`](../mapping.txt). It evaluates annual and quarterly windows
-independently, uses persisted `report-v1` selections, preserves reported zero, and
+independently, uses persisted `report-v2` selections, accepts the verified filing
+registrant set for entity matching, preserves reported zero, and
 stores either one exact fact link or an explicit missing result for every Target
 Metric and period.
 
@@ -158,10 +165,10 @@ The frontend does not open or query SQLite directly. The backend supplies stable
 ### 4.1 First company ingestion and Direct Mapping: implemented
 
 1. A caller submits a company ticker through the ingestion CLI or Python API.
-2. The backend initializes storage, resolves the company, and selects its filing window.
+2. The backend initializes storage, requiring explicit approval for an existing-database schema upgrade, resolves the company, and selects its filing window across any stored verified CIK lineage.
 3. Each selected filing is processed in its own Arelle session.
 4. All exposed observations, supporting evidence, retained resources, and required narrative-section records are stored per filing.
-5. The backend publishes the active five-annual/twelve-quarter window after processing and returns per-filing outcomes.
+5. The backend publishes the selected active window after processing—up to five annual and twelve quarterly filings, with explicit coverage warnings for shorter history—and returns per-filing outcomes.
 6. Direct Mapping runs after evidence publication in a separate operation and persists all seven Target Metric outcomes for every supported period.
 7. A mapping failure preserves the committed evidence window and the prior metric evaluation, reporting mapping status separately.
 8. In Milestone 3, unresolved metrics will enter the LLM recommendation and human-review workflow.
@@ -176,7 +183,7 @@ This workflow does not generate a TXT inspection report.
 3. A due, forced, missing-evidence, or missing-section request refreshes SEC metadata and processes the selected filing window.
 4. Compatible snapshots are artifact-verified and reused; missing or newer-profile snapshots are extracted and stored independently.
 5. The backend publishes the active window only after the run and retains earlier snapshots and inactive filing metadata.
-6. The result reports `checked_no_update`, `updated`, or `refresh_failed_using_local_data` as applicable. A successful publication evaluates or reuses Direct Mapping; a mapping error does not change the ingestion status or roll back evidence.
+6. The result reports `checked_no_update`, `checked_no_filings`, `updated`, or `refresh_failed_using_local_data` as applicable. A successful publication evaluates or reuses Direct Mapping; a mapping error does not change the ingestion status or roll back evidence.
 
 ### 4.3 Inspection report generation
 
@@ -206,7 +213,7 @@ This milestone proves that filing evidence can be stored and reloaded without lo
 
 ### Milestone 2: Direct Mapping — implemented
 
-Versioned period-by-period rules evaluate the seven Target Metrics from exact active snapshots and persisted `report-v1` decisions. Immutable annual and quarterly evaluations retain reported values, explicit missing reasons, rule/window identities, resolution traces, and exact fact lineage.
+Versioned `direct-mapping-v2` period-by-period rules evaluate the seven Target Metrics from exact active snapshots and persisted `report-v2` decisions. Immutable annual and quarterly evaluations retain reported values, explicit missing reasons, rule/window identities, resolution traces, and exact fact lineage.
 
 This milestone proves that all seven metrics are evaluated for every supported period, a complete 5/12 window yields 119 results, zero remains reported, unchanged inputs are idempotent, and mapping never contacts the SEC, opens Arelle, calls an LLM, or generates reports.
 

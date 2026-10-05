@@ -8,7 +8,6 @@ detached filing evidence plus narrative sections in SQLite.
 Direct Mapping for seven financial metrics is implemented over stored evidence.
 The next product layers are evidence-backed LLM recommendations for unresolved
 metrics and a local frontend with evidence downloads and mapping review.
-[core.txt](core.txt) is the original requirements notebook; the
 [project proposal](docs/designs/project_proposal.txt) is the current blueprint.
 
 ## Current status
@@ -60,6 +59,9 @@ Ingestion and update workflows do not generate reports automatically.
 - [Direct Mapping design and implementation record](docs/designs/direct-mapping-implementation-plan.md):
   rules, resolver, persistence, refresh integration, CLI, and current verification
   boundary.
+- [Verified CIK lineage implementation plan](docs/designs/cik-lineage-ingestion-implementation-plan.md):
+  historical broader proposal and acceptance design. The implemented operator-verified
+  lineage workflow is documented in the runbook and ingestion design.
 - [Interactive frontend prototype](docs/analyst_dashboard_wireframe.html) and
   [static preview](docs/analyst_dashboard_wireframe.png): demo-only one-page,
   single-company metric-lineage and filing-download selector; local API integration
@@ -213,17 +215,29 @@ Ingest or update the retained five-annual/twelve-quarter evidence window:
 
 ```powershell
 uv run --no-sync sec-inline-financials AAPL
+uv run --no-sync sec-inline-financials AAPL MSFT NVDA
+uv run --no-sync sec-inline-financials AAPL,MSFT,NVDA
 ```
 
 This primary command prints the final company/run summary, elapsed ingestion time,
 evidence root, artifact directory, and SQLite database path to stdout. Progress is
-written to stderr and flushed after every stage and filing.
+written to stderr and flushed after every stage and filing. Multi-company requests
+run sequentially, continue after a per-company error, and exit nonzero if any ticker
+fails.
+
+All production CLIs inspect the evidence schema before doing work. A new database is
+initialized automatically. When an existing database has pending packaged migrations,
+the command lists them and requires an explicit `y` before upgrading; `n`, Enter, or
+end-of-input cancels without applying the migration. Programmatic callers must make
+the same decision explicitly: `EvidenceStore.initialize()` refuses to upgrade an
+existing database unless the caller passes `allow_schema_upgrade=True`.
 
 The lower-level aliases run the same ingestion without the final elapsed-time and
 path lines:
 
 ```powershell
 uv run --no-sync sec-inline-financials-ingest AAPL
+uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
@@ -238,7 +252,8 @@ filing processing. A check that finds no new selected accession returns
 `checked_no_update`, even when it created newer-profile snapshots. A new selected
 accession returns `updated`. If an SEC refresh fails for a company with stored
 evidence, the command returns `refresh_failed_using_local_data` and leaves the
-published local window unchanged.
+published local window unchanged. If discovery finds no eligible filings for either
+form, it returns `checked_no_filings` without creating placeholder periods.
 
 Record an operator-verified predecessor edge with its legal transition date:
 
@@ -249,7 +264,10 @@ uv run --no-sync sec-inline-financials-lineage <SUCCESSOR_CIK> <PREDECESSOR_CIK>
 
 The date is immutable after it is set. It controls period-based transition
 classification; it is not inferred from filing date, ticker, or company-name
-similarity.
+similarity. The successor must already belong to a stored company. The predecessor
+is added only before the current oldest lineage member; exact-edge reruns are
+idempotent. If post-approval ingestion finds no eligible filings, the lineage command
+exits nonzero but retains the approved edge for a later retry.
 
 Evaluate or reuse Direct Mapping from the published local evidence window:
 
@@ -407,12 +425,14 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-The active automated suite covers narrative-section parsing and read-only replay,
-lossless text-payload compaction and purge cleanup, plus the scoped SEC taxonomy
-retry. This checkout does not currently contain an opt-in live pytest. Historical
-production CLI runs recorded complete 5/12 evidence-v2 windows, narrative sections,
-and artifact integrity, but those records do not prove a future new-accession
-refresh or the SEC's full EFM validation suite.
+The active automated suite covers evidence storage and migrations, ingestion and
+partial filing windows, CIK lineage maintenance and provenance, report-v2 transition
+classification, Direct Mapping and batched registrant lookup, narrative-section
+parsing and read-only replay, lossless text-payload compaction and purge cleanup,
+and the scoped SEC taxonomy retry. This checkout does not currently contain an
+opt-in live pytest. Historical production CLI runs recorded complete 5/12
+evidence-v2 windows, narrative sections, and artifact integrity, but those records
+do not prove a future new-accession refresh or the SEC's full EFM validation suite.
 
 ## Next implementation step
 

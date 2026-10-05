@@ -44,6 +44,19 @@ directory, and SQLite path to stdout. Use `--annual-count`, `--quarterly-count`,
 `--force` when needed. Multi-company batches run sequentially, continue after a
 per-company failure, and exit nonzero if any requested ticker fails.
 
+Before doing application work, each production CLI inspects the evidence schema. A
+new database initializes automatically. If an existing database has pending packaged
+migrations, the CLI prints its current and target versions, lists every pending file,
+warns that older code may reject the result, and asks `Apply these database
+migrations? [y/n]:`. Only `y` applies the upgrade. `n`, Enter, or end-of-input cancels
+with the database unchanged.
+
+Library callers have the same safety boundary: `EvidenceStore.initialize()` refuses
+pending migrations on an existing database. A caller may pass
+`allow_schema_upgrade=True` only after obtaining its own explicit approval. The
+packaged migration runner still verifies checksums and applies the migration plus its
+ledger row atomically.
+
 The lower-level aliases omit the final timing and path lines:
 
 ```powershell
@@ -80,7 +93,8 @@ Use the lineage command only when the first CIK already belongs to a stored comp
 and the second CIK is its exact legal predecessor:
 
 ```powershell
-uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK
+uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK `
+  --effective-date YYYY-MM-DD
 ```
 
 The command obtains the legal name for both CIKs from the SEC, prints the canonical
@@ -88,6 +102,11 @@ company, complete existing lineage, and exact proposed predecessor-to-successor 
 then asks for `y/n`. Only `y` or `Y` saves the edge and starts ingestion. The two CIKs
 remain distinct registrants; filing provenance records the registrant CIK and SEC
 archive-owner CIK for every stored accession.
+
+The effective date becomes immutable once recorded. It lets `report-v2` accept a
+predecessor entity identifier, and unwrap one exact predecessor `LegalEntityAxis`
+context when the reporting period predates a verified transition. The command does
+not infer this date from filing dates, names, tickers, or SEC `formerNames`.
 
 Discovery searches the canonical current CIK first and then walks the stored lineage
 toward older predecessors. A predecessor fills only an annual-year or quarterly-date
@@ -105,6 +124,11 @@ edge requires restoring that backup or a separately reviewed repair procedure.
 
 The command fills the configured five-annual/twelve-quarterly window. It does not
 download the predecessor's complete SEC archive.
+
+If the approved lineage is retained but discovery finds no eligible filings, the
+ingestion result is `checked_no_filings`. The lineage command prints the warning and
+rerun command, preserves the approved edge, and exits nonzero so automation does not
+mistake the empty result for completed evidence ingestion.
 
 Arelle uses the pinned SEC transformation plugin plus a local retry plugin. The
 retry is limited to HTTP 503 responses for HTTPS filing extension-taxonomy `.xsd`
@@ -217,8 +241,9 @@ claim that SEC bytes were checked again.
 ## Company-scoped purge
 
 The purge command accepts one ticker, a comma-separated set, or a space-separated
-set. It defaults to a non-deleting preview (normal schema initialization may still
-apply a packaged migration):
+set. It defaults to a non-deleting preview. Schema inspection happens first; an
+existing database upgrade still requires the explicit approval described above, and
+cancelling that prompt leaves both the schema and company evidence unchanged:
 
 ```powershell
 uv run --no-sync sec-inline-financials-purge AAPL
@@ -284,12 +309,15 @@ uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src
 ```
 
-The active automated suite covers narrative-section extraction/replay, lossless
-text-payload compaction and purge cleanup, and the scoped SEC taxonomy retry. This
-checkout does not contain an opt-in live pytest. Recorded production CLI runs have
-verified complete 5/12 evidence-v2 windows, narrative-section persistence, and
-artifact audits, but a live update that discovers a genuinely new accession remains
-a separate acceptance case. For every live acceptance, record accessions, extraction
+The active automated suite covers evidence storage and migrations, ingestion and
+partial filing windows, CIK lineage maintenance and provenance, report-v2 transition
+classification, Direct Mapping and batched registrant lookup, narrative-section
+extraction/replay, lossless text-payload compaction and purge cleanup, and the scoped
+SEC taxonomy retry. This checkout does not contain an opt-in live pytest. Recorded
+production CLI runs have verified complete 5/12 evidence-v2 windows,
+narrative-section persistence, and artifact audits, but a live update that discovers
+a genuinely new accession remains a separate acceptance case. For every live
+acceptance, record accessions, extraction
 profiles, counts, hashes, elapsed time, database size, artifact size, largest text
 fact, and peak memory without recording `SEC_USER_AGENT` or other
 contact/configuration values.

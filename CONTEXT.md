@@ -41,7 +41,7 @@ A mapping resolved by matching a configured XBRL concept name to a fact for a Ta
 _Avoid_: Mapping Recommendation, inferred concept match
 
 **Direct Mapping Rule Set**:
-The frozen, versioned ordering of primary and alternative concepts used by Direct Mapping. `direct-mapping-v1` is paired with the seven `target-metrics-v1` definitions.
+The frozen, versioned ordering of primary and alternative concepts used by Direct Mapping. The current `direct-mapping-v2` rules are paired with the seven `target-metrics-v1` definitions; prior versions remain audit identities.
 _Avoid_: Runtime parsing of `docs/mapping.txt`, unversioned rules
 
 **Metric Evaluation**:

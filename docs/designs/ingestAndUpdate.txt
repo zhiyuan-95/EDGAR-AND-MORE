@@ -36,6 +36,11 @@ ingest_company(ticker, settings, progress=None)
     -> CompanyIngestionResult
 ```
 
+The wrapper does not silently authorize upgrades to an existing evidence database.
+An embedding application that accepts a pending schema upgrade must first initialize
+the same database with `EvidenceStore.initialize(allow_schema_upgrade=True)`; a
+normal `initialize()` or `ingest_company(...)` call refuses a pending upgrade.
+
 Supported settings include `annual_count`, `quarterly_count`, `force_refresh`, the
 SQLite path, artifact root, SEC User-Agent, and Arelle cache directory. The CLI
 defaults to five exact-form Inline XBRL 10-K filings and twelve exact-form Inline
@@ -66,7 +71,10 @@ belongs outside the source checkout.
 `CompanyIngestionService.ingest_company` executes this decision sequence:
 
 1. Normalize and validate the ticker and filing counts.
-2. Initialize the evidence store and apply packaged, checksum-verified migrations.
+2. Initialize the evidence store with packaged, checksum-verified migrations. A new
+   database initializes automatically. An existing database with pending migrations
+   proceeds only after the CLI lists them and receives explicit operator approval;
+   the service/API refuses the upgrade unless its caller has applied it explicitly.
 3. Read stored company state, active accessions, snapshot coverage, narrative-section
    coverage, and next-check dates.
 4. Contact the SEC only when at least one condition is true:
@@ -87,16 +95,25 @@ mutating the legacy snapshots.
 
 When a refresh is required:
 
-1. Resolve the ticker to the SEC CIK.
-2. Reject a stored ticker/CIK ownership conflict.
-3. Read recent and archived SEC submissions metadata.
-4. Select both the requested annual and quarterly windows. A due check for one form
+1. Resolve the ticker to the current SEC company and CIK.
+2. Reject a stored ticker/current-CIK ownership conflict.
+3. Load the operator-verified registrant lineage from storage, or use an in-memory
+   singleton containing only the current CIK when no lineage has been stored.
+4. Read recent and archived SEC submissions metadata for the lineage from current
+   registrant toward older predecessors. Higher-priority registrants keep an annual
+   year or quarterly report-date slot; an older predecessor fills gaps only.
+5. Select both the requested annual and quarterly windows. A due check for one form
    still enters the shared discovery path for both forms.
-5. Annual selection keeps eligible `isInlineXBRL = true` exact-form `10-K` filings,
+6. Annual selection keeps eligible `isInlineXBRL = true` exact-form `10-K` filings,
    groups candidates by report-date year, and keeps the latest filed candidate for
    each selected year.
-6. Quarterly selection keeps the latest eligible `isInlineXBRL = true` exact-form
+7. Quarterly selection keeps the latest eligible `isInlineXBRL = true` exact-form
    `10-Q` filings.
+
+Lineage is never inferred from names, tickers, accession prefixes, or `formerNames`.
+Each selected filing preserves its registrant CIK and SEC archive-owner CIK in
+`filing_provenance`. A selected current-registrant filing that later fails processing
+is not replaced by a predecessor filing for the same slot.
 
 The requested counts are upper bounds, not a completeness gate. If SEC history has
 fewer eligible filings than requested for either form, discovery returns every
@@ -127,7 +144,7 @@ For each filing:
    SEC transformation-plugin hashes.
 2. Look for a snapshot with the same accession and extraction-profile hash.
 3. If found, verify every linked artifact's path, byte size, and SHA-256. Recreate a
-   missing `report-v1` evaluation from stored evidence when necessary, then mark the
+   missing `report-v2` evaluation from stored evidence when necessary, then mark the
    attempt `reused` without SEC/Arelle processing.
 4. Otherwise create an attempt-private staging directory and Arelle cache.
 5. Open the filing URL with Arelle in online mode using the configured SEC User-Agent.
@@ -144,7 +161,7 @@ For each filing:
    schema, and linkbase resources. External dependencies may remain recorded
    references rather than archived files.
 8. Parse the retained primary document into required narrative-section records.
-9. Close Arelle, classify every observation under `report-v1`, install immutable
+9. Close Arelle, classify every observation under `report-v2`, install immutable
    artifacts, and save the snapshot.
 
 The current `evidence-v2` section set is:
@@ -237,6 +254,11 @@ SEC discovery selected at least one accession not previously known to the store.
 SEC was checked, but no newly selected accession was found. The run may still have
 created newer-profile snapshots, such as the `evidence-v2` section backfill.
 
+`checked_no_filings`
+SEC and every stored lineage member were checked, but neither form produced an
+eligible filing. No placeholder filing, snapshot, period, or mapping result is
+created.
+
 `reused_local`
 The local active window was complete and current, so SEC and Arelle were skipped.
 
@@ -300,11 +322,14 @@ browser frontend remain planned. Ingestion does not synchronize a retrieval inde
 
 ## 13. Verification boundary
 
-The active offline suite covers narrative-section extraction/replay, lossless text
-payload compaction and purge cleanup, and the scoped SEC taxonomy retry. Historical
-production CLI runs separately recorded full 5/12 evidence-v2 windows and artifact
-audits. The current checkout has no opt-in live pytest, and a live update that
-discovers a genuinely new accession remains a separate acceptance case.
+The active offline suite covers evidence storage and migrations, ingestion and
+partial filing windows, CIK lineage maintenance and provenance, report-v2 transition
+classification, Direct Mapping and batched registrant lookup, narrative-section
+extraction/replay, lossless text-payload compaction and purge cleanup, and the scoped
+SEC taxonomy retry. Historical production CLI runs separately recorded full 5/12
+evidence-v2 windows and artifact audits. The current checkout has no opt-in live
+pytest, and a live update that discovers a genuinely new accession remains a
+separate acceptance case.
 
 Primary implementation references:
 

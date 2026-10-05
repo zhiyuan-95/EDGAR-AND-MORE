@@ -1,6 +1,6 @@
 # Section 3.1: Evidence Storage Design and Implementation Record
 
-Date: 2026-09-08; updated 2026-09-23
+Date: 2026-09-08; updated 2026-10-05
 Status: IMPLEMENTED; current automated coverage is narrower than the historical acceptance record
 Basis: `docs/designs/project_proposal.txt`, especially sections 2.2, 3.1, and Milestone 1
 Design choice: fresh plan; stored-evidence replay, selected by the project owner  
@@ -39,6 +39,7 @@ separate from the stored-evidence Direct Mapping command.
 | Files, paths, hashes, source versions | Implemented in Milestone 1 |
 | Required narrative filing sections | Implemented by extraction profile v2 and migration 0003 |
 | Metric results and their fact links | Implemented in Milestone 2 by migration 0004 and the Direct Mapping modules |
+| Verified CIK lineage and filing provenance | Implemented by migrations 0007-0009 and the operator-approved lineage workflow |
 | Recommendations, exact model packets/responses, review decisions | Defined here; planned for Milestone 3 |
 | Company refresh and active-window publication | Implemented in Milestone 1; exact snapshot bindings and mapping refresh added in Milestone 2 |
 | HTTP download endpoints and frontend | Planned for Milestone 4; Python retrieval functions remain the current boundary |
@@ -114,6 +115,9 @@ src/sec_inline_financials/
     sql/0004_direct_mapping.sql  Snapshot bindings and immutable mapping results
     sql/0005_company_purge.sql   Journal for post-commit file cleanup
     sql/0006_compressed_text_payloads.sql  Lossless cold text payloads
+    sql/0007_cik_lineage.sql     Company CIKs, transitions, and filing provenance
+    sql/0008_reporting_transition_dates.sql  Transition effective dates
+    sql/0009_company_scoped_filing_provenance.sql  Company-scoped provenance constraints
     artifacts.py             Stage, verify, install and resolve retained files
     evidence_store.py        Save/load snapshots and bounded evidence queries
     report_projection.py     Explicit adapter used for report equivalence checks
@@ -295,6 +299,9 @@ are text. Required/optional rules below are part of the contract.
 | `schema_migrations` | `version` PK, filename, checksum, applied_at |
 | `companies` | id, unique zero-padded CIK, current name; optional ticker; latest filing dates, next annual/quarterly check dates; created_at, updated_at |
 | `filings` | id, company_id, accession, form, filing_date, report_date, primary_document, source_url, is_active, optional active_window_rank; unique accession |
+| `company_ciks` | company_id + zero-padded CIK identity, legal name, association/update timestamps |
+| `company_cik_transitions` | company-scoped predecessor/successor edges with an optional immutable effective date |
+| `filing_provenance` | filing/company identity plus exact registrant CIK and SEC archive-owner CIK |
 | `processing_runs` | id, company_id, purpose, requested-window JSON, owner_pid, owner_process_start_identity, started_at, optional completed_at/error_summary, status |
 | `processing_run_filings` | id, run_id, filing_id, status, started_at, optional completed_at/snapshot_id/error_code/error_text; unique run_id + filing_id |
 | `evidence_snapshots` | id, filing_id, completed_by_attempt_id, captured_company_name, captured_filing_metadata_json, source_manifest_hash, extraction_profile_hash, extraction_profile_json, payload_hash, coverage_manifest_json, captured_at; optional captured_company_ticker, fiscal_year/fiscal_period with their source |
@@ -498,10 +505,14 @@ casts. Parse exact numeric text into `Decimal` where arithmetic is later authori
 
 ## 7. Classification without changing reporting behavior
 
-Version the existing report rules as `report-v1`. Check numeric/nil/validity,
-context/unit presence, supported period kind, report-date match, annual duration
-300-400 days or quarterly duration 60-120 days, then dimensions and duplicate/conflict
-selection. Store reason codes such as:
+The current runtime uses `report-v2`; prior `report-v1` evaluations remain immutable
+and queryable for audit. Both versions check numeric/nil/validity, context/unit
+presence, supported period kind, report-date match, annual duration 300-400 days or
+quarterly duration 60-120 days, then dimensions and duplicate/conflict selection.
+`report-v2` additionally uses a verified transition effective date to accept a
+predecessor entity identifier for earlier reporting periods and may remove one exact
+predecessor `LegalEntityAxis` wrapper; any remaining business dimensions remain
+dimensional. Store reason codes such as:
 
 ```text
 NON_NUMERIC                 NIL_VALUE
@@ -520,10 +531,9 @@ evidence of a mismatched period end. Nil and invalid facts remain distinct even
 when both also lack a usable numeric value.
 
 Preserve current top-level report coverage for equivalence. Newly retained nested
-or unresolved observations are stored and classified as outside `report-v1` rather
-than silently expanding its output. Reuse the current precision ranking, concept
-grouping, tie-breaking, and conflict semantics. Do not fix its entity-scope or
-grouping limitations inside this storage milestone.
+or unresolved observations are stored and excluded from primary report selection
+rather than silently expanding its output. Reuse the current precision ranking,
+concept grouping, tie-breaking, and conflict semantics.
 
 Link a nonselected duplicate to the selected fact and every conflict issue to all
 its candidate facts. Candidate summary text is reconstructed from those records.
@@ -629,6 +639,12 @@ or a database newer than the application understands. Serialize competing migrat
 attempts with a write transaction and recheck the version after obtaining the lock.
 Ensure the runner does not accidentally commit early through `executescript`.
 
+Fresh databases initialize automatically. Before any production CLI upgrades an
+existing database, it lists the pending migrations and requires explicit operator
+approval. `EvidenceStore.initialize()` likewise refuses a pending existing-database
+upgrade unless the caller passes `allow_schema_upgrade=True` after its own approval
+boundary. Cancelling the CLI prompt leaves the database unchanged.
+
 Use one Arelle session at a time per process; do not share a session across threads.
 This milestone does not add parallel acquisition. Snapshot unique constraints and
 the recheck under the write lock still prevent duplicate commits from competing
@@ -674,7 +690,7 @@ ArelleProcessor.extract_evidence(company, filing, capture_area)
 classify_report(bundle, report_kind, rule_version)
     -> ReportEvaluation
 
-EvidenceStore.initialize() -> schema version
+EvidenceStore.initialize(allow_schema_upgrade=False) -> schema version
 EvidenceStore.find_reusable_snapshot(accession, extraction_profile_hash)
     -> SnapshotRef | None
 EvidenceStore.save_snapshot(bundle, evaluation, attempt_id, installed_artifacts)

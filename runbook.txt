@@ -15,8 +15,8 @@ uv run python tests\inspect_inline_ingestion.py
 #### Delete companies
 uv run --no-sync sec-inline-financials-purge msft aapl --execute
 
-#### lineage maintainance
-uv run --no-sync sec-inline-financials-lineage succession predecession
+#### Lineage maintenance
+uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK --effective-date YYYY-MM-DD
 
 xom : 0002115436 0000034088
 DKNG: 0001883685 0001772757 

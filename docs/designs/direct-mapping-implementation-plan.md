@@ -1,6 +1,6 @@
 # Direct Mapping Design and Implementation Record
 
-- **Status:** Implemented runtime; dedicated Direct Mapping regression tests are not present in the current checkout
+- **Status:** Implemented runtime with focused Direct Mapping, mapping-input, and partial-window regression tests
 - **Scope:** Backend-only Direct Mapping for the seven Target Metrics
 - **Milestone:** Milestone 2 — Direct Mapping
 - **Current implementation:** migration 0004, mapping modules, ingestion integration, and `sec-inline-financials-map`
@@ -24,7 +24,9 @@ The seven Target Metrics are:
 The implemented runtime:
 
 - evaluate the latest five active 10-K snapshots and latest twelve active 10-Q
-  snapshots when a complete 5/12 window is available;
+  snapshots when the standalone mapping command requires a complete 5/12 window;
+- evaluate any non-empty annual and quarterly windows independently after ingestion,
+  without inventing periods for a form that has no eligible filings;
 - keep annual and quarterly concept populations separate;
 - use configured primary and alternative concepts in a deterministic order;
 - preserve reported zero as a reported result;
@@ -42,7 +44,8 @@ results: `7 * (5 annual + 12 quarterly)`.
 
 ## 2. Fixed design decisions
 
-These decisions define the first Direct Mapping version.
+These decisions define the current Direct Mapping version unless a later section is
+explicitly labeled historical.
 
 1. **One evidence store.** Facts, concepts, contexts, report decisions, and metric
    results stay in the existing normalized SQLite database. Do not create annual and
@@ -69,8 +72,8 @@ These decisions define the first Direct Mapping version.
    public status.
 8. **No false missing results.** Missing or incomplete active evidence is a mapping
    run failure. It must not be converted into seven missing metric results.
-9. **Independent policy version.** Direct Mapping uses `direct-mapping-v1`. It can
-   consume stored `report-v1` decisions, but it must not store metric decisions in
+9. **Independent policy version.** Direct Mapping uses `direct-mapping-v2`. It
+   consumes stored `report-v2` decisions, but it must not store metric decisions in
    the report evaluation tables.
 10. **Generic kernel.** The resolver has no metric-specific branches. Revenue uses
     the normal duration path, Operating Cash Flow exercises the quarterly-duration
@@ -104,7 +107,8 @@ Direct Mapping uses the following components.
 | `evidence_snapshots` | Supply immutable filing-scoped evidence and payload identity |
 | `concepts` and `snapshot_concepts` | Resolve namespace-qualified concepts and snapshot-specific metadata |
 | `facts`, `contexts`, `units`, and `fact_dimensions` | Supply exact values, periods, units, entity identifiers, and dimensions |
-| `report_evaluations` and `fact_report_status` | Supply persisted `report-v1` eligibility, duplicate selection, dimensional, conflict, and exclusion decisions |
+| `report_evaluations` and `fact_report_status` | Supply persisted `report-v2` eligibility, duplicate selection, dimensional, conflict, and exclusion decisions |
+| `filing_provenance` and the stored company lineage | Supply the verified registrant-CIK set accepted for each filing period |
 | `fact_exclusion_reasons` and reconciliation tables | Explain why a configured candidate could not supply a value |
 | `EvidenceStore` | Own all bounded reads, transactions, foreign-key checks, and persisted mapping results |
 | `CompanyIngestionService` | Publish a new evidence window and trigger mapping refresh after storage succeeds |
@@ -156,6 +160,10 @@ active 10-Q filings -----> published filing/snapshot bindings
 The resolver is a pure deterministic layer over detached stored records. The
 service and store own input selection, persistence, reuse, and publication.
 
+The ASCII diagram above is the original v1 architecture record and is intentionally
+retained as historical design evidence. The current runtime constants are
+`direct-mapping-v2` and `report-v2`, as described in the surrounding prose.
+
 ## 6. Mapping rule model
 
 ### 6.1 Packaged runtime rules
@@ -167,7 +175,7 @@ not guaranteed to be present in an installed wheel and is easy to parse incorrec
 these constants:
 
 ```python
-DIRECT_MAPPING_RULE_VERSION = "direct-mapping-v1"
+DIRECT_MAPPING_RULE_VERSION = "direct-mapping-v2"
 TARGET_METRIC_DEFINITION_VERSION = "target-metrics-v1"
 ```
 
@@ -180,6 +188,9 @@ expected_period_type       duration | instant
 expected_unit_family       monetary
 candidates                 ordered ConceptCandidate tuple
 ```
+
+Version 2 retains the v1 concept order and adds `PartnersCapital` as the last Equity
+alternative. Prior evaluation identities remain immutable.
 
 Each `ConceptCandidate` contains:
 
@@ -262,7 +273,7 @@ For the requested company and report kind:
 2. Require the configured filing count when the caller requests a complete-window
    evaluation.
 3. Require one published snapshot binding for every selected filing.
-4. Require one `report-v1` evaluation of the matching report kind for every selected
+4. Require one `report-v2` evaluation of the matching report kind for every selected
    snapshot.
 5. Require each selected snapshot and its linked artifacts to pass the existing
    integrity boundary when the mapping call follows a reuse path.
@@ -282,7 +293,7 @@ For each report kind, derive:
    the active annual or quarterly window.
 2. **Selectable concept union:** distinct concepts whose facts have
    `fact_report_status.evidence_role = 'selected_primary'` under the required
-   `report-v1` evaluations. This prunes the value-selection query.
+   `report-v2` evaluations. This prunes the value-selection query.
 
 Do not build the observed union from every `snapshot_concepts` row. That table also
 contains concepts used only by dimensions or calculation relationships. A concept
@@ -293,7 +304,7 @@ quarterly query may use only snapshots bound to active exact-form 10-Q filings.
 
 ## 9. Fact eligibility for Direct Mapping
 
-`direct-mapping-v1` consumes `report-v1` selected-primary facts rather than
+`direct-mapping-v2` consumes `report-v2` selected-primary facts rather than
 reimplementing its period, numeric, validity, dimensional, duplicate, and conflict
 logic. Record the exact source report evaluation ID for every metric-period result.
 
@@ -301,8 +312,8 @@ The resolver applies these mapping-specific checks after the report decision:
 
 - the concept matches the configured namespace family and local name;
 - the concept's period type matches the Target Metric rule;
-- the context entity identifier matches the selected company after a documented CIK
-  normalization rule;
+- the context entity identifier matches a normalized CIK in the verified registrant
+  set stored for that filing period;
 - the unit resolves to the configured monetary unit family;
 - the context ends on the filing report date; and
 - the stored typed numeric text parses as a finite `Decimal`.
@@ -873,11 +884,13 @@ The runtime implements the following design conditions:
 - the stored-evidence-only acceptance result, when run, is reported with its exact
   scope and limitations.
 
-The current verification gap is automated regression coverage. The active suite
-does not contain the dedicated mapping tests described in sections 15 and 16.
-Historical stored-evidence acceptance supports the implementation record, while the
-interactive `tests/inspect_direct_mapping.py` remains a manual read-only inspector;
-neither substitutes for restoring those focused tests.
+The active suite includes focused resolver tests for lineage-aware entity matching,
+storage tests for batched registrant identity lookup, and service tests for partial
+annual/quarterly windows. The broader matrix in sections 15 and 16 remains the
+historical design target rather than a claim that every listed case has a dedicated
+test. Historical stored-evidence acceptance and the interactive
+`tests/inspect_direct_mapping.py` remain useful evidence, but neither is a live SEC
+or new-accession acceptance run.
 
 ## 20. Recommended commit sequence
 

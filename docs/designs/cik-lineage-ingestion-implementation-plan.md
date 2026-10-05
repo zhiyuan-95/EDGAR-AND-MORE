@@ -1,12 +1,22 @@
 # Verified CIK Lineage Ingestion Implementation Plan
 
-- **Status:** Proposed
+- **Status:** Historical broader proposal; operator-verified lineage subset implemented
 - **Scope:** First-seen lineage and candidate inspection, backend filing discovery, ingestion,
   evidence provenance, and Direct Mapping
 - **Primary defect:** A current ticker CIK can have insufficient history because older filings
   belong to a verified predecessor or successor registrant lineage
 - **Initial acceptance company:** XOM
 - **Current implementation baseline:** `gstack` at `75bbe45881c80a5b19746d3323d4ac3d99b6eea1`
+
+> **Implementation note (2026-10-05):** The current runtime implements explicit
+> operator-approved predecessor maintenance, current-to-oldest bounded discovery,
+> partial filing-window publication, company-scoped filing provenance, effective
+> transition dates, `report-v2`, and lineage-aware Direct Mapping. It does **not**
+> implement this plan's automated unknown-candidate discovery, pending-candidate
+> persistence, reviewed catalog promotion, or automatic first-seen lineage resolution.
+> Treat those sections as historical/future design, not current CLI behavior. Current
+> operational behavior is documented in `docs/evidence_storage_runbook.md` and
+> `docs/designs/ingestAndUpdate.txt`.
 
 ## 1. Outcome
 
@@ -1088,7 +1098,7 @@ pending review and none of its filings entered the production window.
 Create:
 
 ```text
-src/sec_inline_financials/storage/sql/0007_company_lineage.sql
+src/sec_inline_financials/storage/sql/0007_cik_lineage.sql
 ```
 
 Keep this migration additive so older evidence and foreign-key relationships remain intact.
@@ -1655,7 +1665,7 @@ Acceptance:
 
 Files:
 
-- `src/sec_inline_financials/storage/sql/0007_company_lineage.sql`
+- `src/sec_inline_financials/storage/sql/0007_cik_lineage.sql`
 - `src/sec_inline_financials/storage/evidence_store.py`
 - `src/sec_inline_financials/storage/migrations.py` only if required
 - `tests/test_evidence_store_lineage.py`
