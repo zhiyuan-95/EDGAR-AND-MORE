@@ -269,6 +269,22 @@ is added only before the current oldest lineage member; exact-edge reruns are
 idempotent. If post-approval ingestion finds no eligible filings, the lineage command
 exits nonzero but retains the approved edge for a later retry.
 
+Promote a verified distinct successor after the stored canonical company:
+
+```powershell
+uv run --no-sync sec-inline-financials-lineage-change <PREDECESSOR_CIK> <SUCCESSOR_CIK> `
+  --effective-date YYYY-MM-DD
+```
+
+For a stored `B -> A` lineage, `lineage-change A N` previews the direct `A -> N`
+edge, keeps the existing company ID and ticker, makes `N` canonical, and preserves
+`A` and `B` as historical registrants. It uses the same preview, explicit `y/n`
+approval, commit-before-ingestion sequence, result statuses, and retry behavior as
+predecessor maintenance. After approval it runs the existing full-lineage ingestion
+path from `N`; a later ingestion failure does not roll back the approved promotion,
+and the printed rerun command is safe and idempotent. Any required schema migration
+has its own approval prompt before the lineage preview.
+
 Evaluate or reuse Direct Mapping from the published local evidence window:
 
 ```powershell

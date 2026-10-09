@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -9,10 +10,12 @@ from typing import Literal, Protocol
 
 from sec_inline_financials.errors import LineageError
 
+_CIK_PATTERN = re.compile(r"[0-9]{1,10}\Z")
+
 
 def normalize_cik(value: str) -> str:
     stripped = value.strip()
-    if not stripped.isdigit() or len(stripped) > 10 or int(stripped) == 0:
+    if _CIK_PATTERN.fullmatch(stripped) is None or int(stripped) == 0:
         raise LineageError("CIK must be a positive number containing at most 10 digits.")
     return stripped.zfill(10)
 
@@ -71,6 +74,10 @@ class LineageStore(Protocol):
     def load_company_lineage(self, cik: str) -> CompanyLineage | None: ...
 
     def apply_lineage_patch(
+        self, plan: LineagePatchPlan
+    ) -> Literal["created", "updated", "already_present"]: ...
+
+    def apply_successor_promotion(
         self, plan: LineagePatchPlan
     ) -> Literal["created", "updated", "already_present"]: ...
 
@@ -259,6 +266,101 @@ class LineageMaintenanceService:
             already_present=already_present,
         )
 
+    def preview_successor_promotion(
+        self,
+        predecessor_cik: str,
+        successor_cik: str,
+        *,
+        effective_date: date | None = None,
+    ) -> LineagePatchPlan:
+        predecessor_key = normalize_cik(predecessor_cik)
+        successor_key = normalize_cik(successor_cik)
+        if predecessor_key == successor_key:
+            raise LineageError("Successor and predecessor CIKs must be different.")
+
+        before = self._store.load_company_lineage(predecessor_key)
+        if before is None:
+            raise LineageError(
+                f"Predecessor CIK {predecessor_key} does not belong to a stored company lineage."
+            )
+        stored_edge = next(
+            (
+                edge
+                for edge in before.edges
+                if edge.predecessor_cik == predecessor_key and edge.successor_cik == successor_key
+            ),
+            None,
+        )
+        already_present = stored_edge is not None
+        is_exact_rerun = already_present and before.canonical_current_cik == successor_key
+        if before.canonical_current_cik != predecessor_key and not is_exact_rerun:
+            raise LineageError("The supplied predecessor must be the canonical current CIK.")
+        if (
+            stored_edge is not None
+            and stored_edge.effective_date is not None
+            and effective_date is not None
+            and stored_edge.effective_date != effective_date
+        ):
+            raise LineageError(
+                "The transition effective date is already verified and cannot be changed."
+            )
+        target_effective_date = (
+            effective_date
+            if effective_date is not None
+            else stored_edge.effective_date
+            if stored_edge is not None
+            else None
+        )
+        exact_edge = LineageEdge(predecessor_key, successor_key, target_effective_date)
+
+        successor_owner = self._store.load_company_lineage(successor_key)
+        if successor_owner is not None:
+            if successor_owner.company_id != before.company_id:
+                raise LineageError(
+                    f"Successor CIK {successor_key} belongs to another stored company."
+                )
+            if not is_exact_rerun:
+                raise LineageError(f"CIK {successor_key} is already attached to this lineage.")
+
+        predecessor = self._resolved_identity(predecessor_key)
+        successor = self._resolved_identity(successor_key)
+        if is_exact_rerun:
+            members = tuple(
+                predecessor
+                if member.cik == predecessor_key
+                else successor
+                if member.cik == successor_key
+                else member
+                for member in before.current_to_oldest
+            )
+            edges = tuple(
+                exact_edge
+                if edge.predecessor_cik == predecessor_key and edge.successor_cik == successor_key
+                else edge
+                for edge in before.edges
+            )
+        else:
+            members = (successor,) + tuple(
+                predecessor if member.cik == predecessor_key else member
+                for member in before.current_to_oldest
+            )
+            edges = (*before.edges, exact_edge)
+        after = build_company_lineage(
+            company_id=before.company_id,
+            canonical_current_cik=successor_key,
+            members=members,
+            edges=edges,
+        )
+        return LineagePatchPlan(
+            company_id=before.company_id,
+            successor=successor,
+            predecessor=predecessor,
+            before=before,
+            after=after,
+            expected_state_hash=before.state_hash,
+            already_present=already_present,
+        )
+
     def apply_link(
         self, plan: LineagePatchPlan
     ) -> Literal["created", "updated", "already_present"]:
@@ -270,6 +372,14 @@ class LineageMaintenanceService:
             raise LineageError("Lineage ingestion is not configured.")
         disposition = self.apply_link(plan)
         ingestion = ingest_company_cik(plan.before.canonical_current_cik)
+        return LineageMaintenanceResult(disposition=disposition, ingestion=ingestion)
+
+    def apply_successor_and_ingest(self, plan: LineagePatchPlan) -> LineageMaintenanceResult:
+        ingest_company_cik = self._ingest_company_cik
+        if ingest_company_cik is None:
+            raise LineageError("Lineage ingestion is not configured.")
+        disposition = self._store.apply_successor_promotion(plan)
+        ingestion = ingest_company_cik(plan.after.canonical_current_cik)
         return LineageMaintenanceResult(disposition=disposition, ingestion=ingestion)
 
     def _resolved_identity(self, cik: str) -> RegistrantIdentity:

@@ -88,7 +88,7 @@ belongs outside the source checkout.
 
 An active legacy `evidence-v1` window has no `filing_sections`. Its next request is
 therefore treated as incomplete even when the next-check dates are in the future.
-The request performs SEC discovery and creates `evidence-v2` snapshots instead of
+The request performs SEC discovery and creates `evidence-v3` snapshots instead of
 mutating the legacy snapshots.
 
 ## 4. SEC discovery
@@ -164,7 +164,7 @@ For each filing:
 9. Close Arelle, classify every observation under `report-v2`, install immutable
    artifacts, and save the snapshot.
 
-The current `evidence-v2` section set is:
+The current `evidence-v3` section set is:
 
 - 10-K: Items 1, 1A, 3, 7, 7A, and 8.
 - 10-Q: Part I Items 1, 2, 3, and 4; Part II Items 1 and 1A.
@@ -252,7 +252,7 @@ SEC discovery selected at least one accession not previously known to the store.
 
 `checked_no_update`
 SEC was checked, but no newly selected accession was found. The run may still have
-created newer-profile snapshots, such as the `evidence-v2` section backfill.
+created newer-profile snapshots, such as the `evidence-v3` section backfill.
 
 `checked_no_filings`
 SEC and every stored lineage member were checked, but neither form produced an

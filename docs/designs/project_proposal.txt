@@ -45,7 +45,7 @@ The current application already:
 - requires explicit operator approval before applying pending migrations to an existing evidence database; and
 - extracts required narrative sections from the retained primary document into the same snapshot.
 
-The current storage profile is `evidence-v2`. It preserves facts excluded by the report filters and records extracted, missing, or unparseable narrative sections explicitly. A compatible snapshot can be reused only after its linked artifacts pass integrity checks. A newer extraction profile creates a new snapshot without rewriting the older one.
+The current storage profile is `evidence-v3`. It preserves facts excluded by the report filters, records extracted, missing, or unparseable narrative sections explicitly, and includes registrant/archive-owner CIK provenance in the semantic payload identity. Legacy `evidence-v1` and `evidence-v2` snapshots retain their original hashing contracts. A compatible snapshot can be reused only after its linked artifacts pass integrity checks. A newer extraction profile creates a new snapshot without rewriting the older one.
 
 ### 2.2 On-demand inspection reports
 

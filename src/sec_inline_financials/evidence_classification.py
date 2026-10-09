@@ -135,7 +135,7 @@ def _normalized_cik(value: str | None) -> str | None:
     if value is None:
         return None
     stripped = value.strip()
-    if not stripped.isdigit() or len(stripped) > 10:
+    if re.fullmatch(r"[0-9]{1,10}", stripped) is None:
         return None
     return stripped.zfill(10)
 

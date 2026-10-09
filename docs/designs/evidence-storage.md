@@ -16,8 +16,9 @@ Milestone 1 stores all observed filing facts,
 their meanings, contexts, units, dimensions, report classifications, conflict
 candidates, validation evidence, calculation relationships, and source-file
 provenance in one SQLite database with retained files alongside it. The current
-`evidence-v2` profile also stores required 10-K/10-Q narrative sections parsed from
-the retained primary document.
+`evidence-v3` profile stores required 10-K/10-Q narrative sections parsed from the
+retained primary document and binds registrant/archive-owner CIK provenance into
+the semantic payload identity.
 
 The selected approach is stored-evidence replay. Full offline Arelle reprocessing
 was considered and deferred: that would additionally require a complete dependency
@@ -269,7 +270,7 @@ relationship. The report projection continues to expose its current Calculation
 
 ### 5.5 Narrative filing sections
 
-Extraction profile `evidence-v2` selects the exact retained primary document and
+Extraction profiles `evidence-v2` and `evidence-v3` select the exact retained primary document and
 parses required narrative sections before the Arelle session closes. The parser
 stores normalized text separately from the immutable source bytes.
 
@@ -279,10 +280,11 @@ ordered record with `extracted`, `not_found`, or `parse_error` status. Extracted
 records include source locators and a SHA-256 of normalized text; unavailable
 records retain a diagnostic and never masquerade as an empty disclosure.
 
-Section content participates in the evidence-v2 semantic payload hash. A legacy
-evidence-v1 snapshot remains immutable and reusable for explicit v1 retrieval, but
-it does not satisfy the current active-window section requirement. Company ingestion
-therefore reprocesses active legacy filings into new evidence-v2 snapshots.
+Section content participates in the evidence-v2 and evidence-v3 semantic payload
+hashes. Evidence-v3 additionally includes registrant/archive-owner CIK provenance.
+Legacy evidence-v1 and evidence-v2 snapshots keep their original hash contracts;
+evidence-v1 does not satisfy the active-window section requirement. Company
+ingestion therefore reprocesses section-less legacy filings into a modern snapshot.
 
 ## 6. SQLite schema
 
@@ -661,7 +663,7 @@ Repeat ingestion means no duplicate evidence, not a fresh verification of SEC st
 - A newer profile can create a new snapshot; earlier snapshots remain retrievable.
 - Active snapshots without the current narrative-section profile make the company
   window incomplete and trigger a request-time refresh even before its next-check
-  dates. Evidence-v1 rows are retained while evidence-v2 snapshots are added.
+  dates. Legacy rows are retained while evidence-v3 snapshots are added.
 - Reusing local evidence does not claim that remote filing bytes were rechecked.
 - If acquisition occurs and observes a different manifest, store a distinct source
   snapshot; do not overwrite the prior one. Choosing which snapshot feeds published

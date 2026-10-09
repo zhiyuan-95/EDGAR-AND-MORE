@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
+import pytest
 from arelle.XmlValidateConst import VALID
 
 from sec_inline_financials.company_lineage import RegistrantIdentity, ReportingTransition
-from sec_inline_financials.evidence_classification import REPORT_RULE_VERSION, classify_report
+from sec_inline_financials.evidence_classification import (
+    LEGACY_REPORT_RULE_VERSION,
+    REPORT_RULE_VERSION,
+    classify_report,
+)
 from sec_inline_financials.evidence_models import (
     ContextDimensionRecord,
     ContextRecord,
@@ -69,6 +75,86 @@ def test_report_v2_excludes_pre_transition_successor_context_without_verified_pr
     assert tuple(reason[0] for reason in status.exclusion_reasons) == (
         "TRANSITION_NON_REPORTING_ENTITY",
     )
+
+
+def test_report_v1_does_not_apply_transition_wrapper_removal() -> None:
+    bundle = _bundle(
+        _context(
+            entity_identifier=_SUCCESSOR.cik,
+            dimensions=(_legal_entity_axis("Predecessor Corp Member"),),
+        )
+    )
+
+    evaluation = classify_report(
+        bundle,
+        "quarterly",
+        LEGACY_REPORT_RULE_VERSION,
+        transition=_TRANSITION,
+    )
+
+    assert evaluation.statuses[0].evidence_role == "dimensional"
+
+
+@pytest.mark.parametrize("report_date", (date(2026, 4, 1), date(2026, 4, 2)))
+def test_report_v2_does_not_apply_transition_on_or_after_effective_date(
+    report_date: date,
+) -> None:
+    bundle = _bundle(
+        replace(
+            _context(
+                entity_identifier=_SUCCESSOR.cik,
+                dimensions=(_legal_entity_axis("Predecessor Corp Member"),),
+            ),
+            period_end_date=report_date,
+        )
+    )
+    bundle = replace(bundle, filing=replace(bundle.filing, report_date=report_date))
+
+    evaluation = classify_report(bundle, "quarterly", transition=_TRANSITION)
+
+    assert evaluation.statuses[0].evidence_role == "dimensional"
+
+
+def test_report_v2_does_not_apply_transition_to_a_non_successor_filing() -> None:
+    bundle = _bundle(
+        _context(
+            entity_identifier=_SUCCESSOR.cik,
+            dimensions=(_legal_entity_axis("Predecessor Corp Member"),),
+        )
+    )
+    bundle = replace(
+        bundle,
+        filing=replace(bundle.filing, registrant_cik=_PREDECESSOR.cik),
+    )
+
+    evaluation = classify_report(bundle, "quarterly", transition=_TRANSITION)
+
+    assert evaluation.statuses[0].evidence_role == "dimensional"
+
+
+def test_report_v2_accepts_a_direct_predecessor_entity_context() -> None:
+    bundle = _bundle(_context(entity_identifier=_PREDECESSOR.cik, dimensions=()))
+
+    evaluation = classify_report(bundle, "quarterly", transition=_TRANSITION)
+
+    assert evaluation.statuses[0].evidence_role == "selected_primary"
+
+
+def test_report_v2_rejects_multiple_matching_transition_wrappers() -> None:
+    bundle = _bundle(
+        _context(
+            entity_identifier=_SUCCESSOR.cik,
+            dimensions=(
+                _legal_entity_axis("Predecessor Corp Member", source_order=0),
+                _legal_entity_axis("Predecessor Corp Member", source_order=1),
+            ),
+        )
+    )
+
+    evaluation = classify_report(bundle, "quarterly", transition=_TRANSITION)
+
+    assert evaluation.statuses[0].evidence_role == "excluded"
+    assert evaluation.statuses[0].exclusion_reasons[0][0] == "TRANSITION_NON_REPORTING_ENTITY"
 
 
 def _bundle(context: ContextRecord) -> FilingEvidenceBundle:
@@ -179,9 +265,13 @@ def _context(
     )
 
 
-def _legal_entity_axis(member_name: str) -> ContextDimensionRecord:
+def _legal_entity_axis(
+    member_name: str,
+    *,
+    source_order: int = 0,
+) -> ContextDimensionRecord:
     return ContextDimensionRecord(
-        source_order=0,
+        source_order=source_order,
         axis_namespace_uri="https://xbrl.sec.gov/dei/2024",
         axis_local_name="LegalEntityAxis",
         member_kind="explicit",

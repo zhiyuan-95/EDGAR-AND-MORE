@@ -77,7 +77,7 @@ def build_extraction_profile(transform_plugin: Path) -> ExtractionProfile:
     revision = hashlib.sha256(canonical_json(hashes).encode()).hexdigest()[:16]
     return ExtractionProfile(
         application_version=application_version,
-        extractor_version="evidence-extractor-v2",
+        extractor_version="evidence-extractor-v3",
         arelle_version=arelle_version,
         validation_options=(
             ("validate", "true"),
@@ -88,7 +88,7 @@ def build_extraction_profile(transform_plugin: Path) -> ExtractionProfile:
         ),
         transform_plugin_revision=revision,
         transform_plugin_hashes=tuple(hashes),
-        serialization_version="evidence-v2",
+        serialization_version="evidence-v3",
     )
 
 
@@ -106,7 +106,7 @@ def detach_filing_evidence(
     documents, document_objects = _capture_source_documents(model, filing, capture_area)
     document_keys = {id(value): key for key, value in document_objects.items()}
     filing_sections: tuple[FilingSectionRecord, ...] = ()
-    if extraction_profile.serialization_version == "evidence-v2":
+    if extraction_profile.serialization_version in {"evidence-v2", "evidence-v3"}:
         primary_document = _primary_document(documents, filing)
         if primary_document.captured_path is None:
             raise CaptureError("The primary filing document has no captured bytes.")

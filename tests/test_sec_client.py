@@ -66,6 +66,41 @@ def test_discover_annual_inline_filings_rejects_mismatched_column_lengths() -> N
         client.discover_annual_inline_filings(_COMPANY, count=1)
 
 
+def test_resolve_registrant_returns_verified_sec_identity() -> None:
+    client = SecClient(
+        user_agent="SEC Client Test test@example.com",
+        fetch_json=lambda *_: {"cik": 123456, "name": "  Test Company, Inc.  "},
+    )
+
+    assert client.resolve_registrant("123456") == RegistrantIdentity(
+        cik="0000123456",
+        legal_name="Test Company, Inc.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        ([], "unexpected structure"),
+        ({"name": "Missing CIK"}, "has no valid CIK"),
+        ({"cik": 999999, "name": "Wrong CIK"}, "does not match"),
+        ({"cik": "١٢٣٤٥٦", "name": "Unicode CIK"}, "has no valid CIK"),
+        ({"cik": 123456, "name": "  "}, "has no name"),
+    ),
+)
+def test_resolve_registrant_rejects_malformed_identity_payloads(
+    payload: object,
+    message: str,
+) -> None:
+    client = SecClient(
+        user_agent="SEC Client Test test@example.com",
+        fetch_json=lambda *_: payload,
+    )
+
+    with pytest.raises(DiscoveryError, match=message):
+        client.resolve_registrant("123456")
+
+
 def test_discover_company_window_fills_lineage_gaps_without_overwriting_current_slots() -> None:
     successor_cik = "0000000002"
     predecessor_cik = "0000000001"
@@ -155,6 +190,81 @@ def test_discover_company_window_fills_lineage_gaps_without_overwriting_current_
         "0000000002-26-000020",
         "0000000001-26-000021",
     )
+
+
+def test_discover_company_window_loads_history_until_gaps_are_filled_and_deduplicates() -> None:
+    cik = _COMPANY.cik
+    recent = _filing_row(
+        accession="0000123456-26-000001",
+        form="10-K",
+        filing_date="2026-02-01",
+        report_date="2025-12-31",
+        primary_document="current.htm",
+    )
+    prior = _filing_row(
+        accession="0000123456-25-000001",
+        form="10-K",
+        filing_date="2025-02-01",
+        report_date="2024-12-31",
+        primary_document="prior.htm",
+    )
+    quarter = _filing_row(
+        accession="0000123456-26-000002",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-03-31",
+        primary_document="quarter.htm",
+    )
+    main = _submissions_payload(cik, (recent,))
+    main["name"] = _COMPANY.name
+    main["filings"]["files"] = [{"name": "old-one.json"}, {"name": "unused.json"}]
+    history = _submissions_payload(cik, (recent, prior, quarter))["filings"]["recent"]
+    requested: list[str] = []
+
+    def fetch_json(url: str, _headers: dict[str, str]) -> Any:
+        requested.append(url)
+        if url.endswith(f"/CIK{cik}.json"):
+            return main
+        if url.endswith("/old-one.json"):
+            return history
+        raise AssertionError(f"History traversal should have stopped before {url}")
+
+    lineage = build_company_lineage(
+        company_id=1,
+        canonical_current_cik=cik,
+        members=(RegistrantIdentity(cik, _COMPANY.name),),
+        edges=(),
+    )
+
+    window = SecClient(
+        user_agent="SEC Client Test test@example.com",
+        fetch_json=fetch_json,
+    ).discover_company_window(lineage, annual_count=2, quarterly_count=1)
+
+    assert tuple(filing.accession for filing in window.annual) == (
+        recent["accessionNumber"],
+        prior["accessionNumber"],
+    )
+    assert tuple(filing.accession for filing in window.quarterly) == (quarter["accessionNumber"],)
+    assert requested[-1].endswith("/old-one.json")
+
+
+def test_discover_company_window_rejects_malformed_history_file_list() -> None:
+    payload = _submissions_payload(_COMPANY.cik, ())
+    payload["filings"]["files"] = "not-a-list"
+    lineage = build_company_lineage(
+        company_id=1,
+        canonical_current_cik=_COMPANY.cik,
+        members=(RegistrantIdentity(_COMPANY.cik, _COMPANY.name),),
+        edges=(),
+    )
+    client = SecClient(
+        user_agent="SEC Client Test test@example.com",
+        fetch_json=lambda *_: payload,
+    )
+
+    with pytest.raises(DiscoveryError, match="history list.*malformed"):
+        client.discover_company_window(lineage, annual_count=1, quarterly_count=1)
 
 
 def _filing_row(

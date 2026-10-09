@@ -80,8 +80,9 @@ result = ingest_company("MSFT", settings, progress=print)
 The result is `reused_local` without SEC or Arelle when the active window is complete
 and its next-check dates are current. A due/forced request, missing evidence, or an
 active legacy snapshot without narrative sections enters SEC discovery and processes
-the selected window. Legacy `evidence-v1` snapshots remain immutable; the current
-profile stores new `evidence-v2` snapshots with `filing_sections`.
+the selected window. Legacy `evidence-v1` and `evidence-v2` snapshots remain
+immutable; the current `evidence-v3` profile retains `filing_sections` and adds
+registrant/archive-owner CIK provenance to the semantic payload identity.
 
 When processing occurs, `result.run` contains a run ID and one stored, reused, or
 failed outcome per filing. Each filing commits independently. A failed filing cannot
@@ -129,6 +130,43 @@ If the approved lineage is retained but discovery finds no eligible filings, the
 ingestion result is `checked_no_filings`. The lineage command prints the warning and
 rerun command, preserves the approved edge, and exits nonzero so automation does not
 mistake the empty result for completed evidence ingestion.
+
+### Promote a distinct successor CIK
+
+When the stored canonical company receives a verified distinct successor, use the
+companion command with the old canonical CIK first and the new successor CIK second:
+
+```powershell
+uv run --no-sync sec-inline-financials-lineage-change PREDECESSOR_CIK SUCCESSOR_CIK `
+  --effective-date YYYY-MM-DD
+```
+
+For an existing `B -> A` lineage, `lineage-change A N` previews `A -> N`. The preview
+uses the same canonical-company, existing-lineage, proposed-edge, effective-date, and
+status sections as predecessor maintenance, followed by:
+
+```text
+Create this lineage and ingest the successor's filings? [y/n]:
+```
+
+Only `y` or `Y` approves. `n`, blank input, or EOF cancels without lineage or
+ingestion changes; invalid input repeats the prompt. If the database schema needs an
+upgrade, that separate approval occurs first and remains committed even if later
+lineage validation fails.
+
+Approval atomically adds `N` to the existing company's CIK membership, inserts the
+direct `A -> N` edge, and changes that same company row's canonical CIK and current
+name to `N`. The company ID and ticker do not change. Existing accessions, registrant
+CIKs, archive-owner CIKs, evidence artifacts, and filing-provenance rows are not
+rewritten. The following existing ingestion stage may refresh active-window flags,
+ranks, bindings, and check dates under its normal publication rules.
+
+The lineage transaction commits before ingestion. If SEC discovery, downloading,
+Arelle processing, or filing selection later fails, `N` remains canonical and the
+command prints the exact safe rerun command. Repeat the same positional arguments
+`A N`, even though `A` is then historical and `N` is current. The exact-edge rerun
+refreshes allowed names or a previously missing effective date without duplicating
+membership, transitions, filings, snapshots, or provenance.
 
 Arelle uses the pinned SEC transformation plugin plus a local retry plugin. The
 retry is limited to HTTP 503 responses for HTTPS filing extension-taxonomy `.xsd`

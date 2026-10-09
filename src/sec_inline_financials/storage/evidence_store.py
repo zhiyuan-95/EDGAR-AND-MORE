@@ -7,6 +7,7 @@ import re
 import sqlite3
 import time
 import zlib
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -23,6 +24,7 @@ from sec_inline_financials.company_lineage import (
 from sec_inline_financials.errors import (
     EvidenceStorageError,
     FilingMetadataError,
+    LineageError,
     MappingInputError,
     SchemaError,
     SnapshotMismatchError,
@@ -99,6 +101,8 @@ _RAW_PAYLOAD_INTERNAL_COLUMNS = (
     "raw_payload_compressed_bytes",
 )
 _DEI_NAMESPACE = re.compile(r"^https?://xbrl\.sec\.gov/dei/\d{4}/?$", re.IGNORECASE)
+_LINEAGE_SENSITIVE_REPORT_RULE_VERSION = "report-v2"
+_REPORT_RULE_CONTEXT_SEPARATOR = "@lineage:"
 
 
 def _now() -> str:
@@ -111,6 +115,13 @@ def _optional_date(value: object) -> date | None:
 
 def _bool(value: object) -> bool | None:
     return None if value is None else bool(value)
+
+
+def _base_report_rule_version(rule_version: str) -> str:
+    contextual_prefix = f"{_LINEAGE_SENSITIVE_REPORT_RULE_VERSION}{_REPORT_RULE_CONTEXT_SEPARATOR}"
+    if rule_version.startswith(contextual_prefix):
+        return _LINEAGE_SENSITIVE_REPORT_RULE_VERSION
+    return rule_version
 
 
 def _stored_typed_value_text(observation: ObservationRecord) -> str | None:
@@ -236,10 +247,10 @@ def _loaded_fact_dict(
 def _normalized_declared_cik(value: object) -> str | None:
     if value is None:
         return None
-    stripped = str(value).strip()
-    if not stripped.isdigit() or len(stripped) > 10:
+    try:
+        return normalize_cik(str(value))
+    except LineageError:
         return None
-    return stripped.zfill(10)
 
 
 def _snapshot_registrants_by_id(
@@ -547,6 +558,131 @@ class EvidenceStore:
                 raise FilingMetadataError("Applied lineage does not match the approved preview.")
             return "created"
 
+    def apply_successor_promotion(
+        self, plan: LineagePatchPlan
+    ) -> Literal["created", "updated", "already_present"]:
+        """Promote an approved distinct-CIK successor on the existing company row."""
+        with self.database.write_transaction() as connection:
+            current = self._load_company_lineage(connection, plan.predecessor.cik)
+            if current is None or current.company_id != plan.company_id:
+                raise FilingMetadataError("The previewed company lineage no longer exists.")
+            if current.state_hash != plan.expected_state_hash:
+                raise FilingMetadataError("The company lineage changed after preview; retry.")
+            approved_edge = next(
+                (
+                    edge
+                    for edge in plan.after.edges
+                    if edge.predecessor_cik == plan.predecessor.cik
+                    and edge.successor_cik == plan.successor.cik
+                ),
+                None,
+            )
+            if approved_edge is None:
+                raise FilingMetadataError("The approved preview omits the successor edge.")
+            current_edge = next(
+                (
+                    edge
+                    for edge in current.edges
+                    if edge.predecessor_cik == plan.predecessor.cik
+                    and edge.successor_cik == plan.successor.cik
+                ),
+                None,
+            )
+            if current_edge is not None:
+                if current.canonical_current_cik != plan.successor.cik:
+                    raise FilingMetadataError(
+                        "The existing successor edge is not the canonical lineage boundary."
+                    )
+                now = _now()
+                connection.execute(
+                    "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                    "WHERE company_id = ? AND cik = ?",
+                    (plan.predecessor.legal_name, now, plan.company_id, plan.predecessor.cik),
+                )
+                connection.execute(
+                    "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                    "WHERE company_id = ? AND cik = ?",
+                    (plan.successor.legal_name, now, plan.company_id, plan.successor.cik),
+                )
+                connection.execute(
+                    "UPDATE companies SET current_name = ?, updated_at = ? WHERE id = ?",
+                    (plan.successor.legal_name, now, plan.company_id),
+                )
+                disposition: Literal["updated", "already_present"] = "already_present"
+                if current_edge.effective_date != approved_edge.effective_date:
+                    connection.execute(
+                        "UPDATE company_cik_transitions SET effective_date = ? "
+                        "WHERE company_id = ? AND predecessor_cik = ? AND successor_cik = ?",
+                        (
+                            approved_edge.effective_date.isoformat()
+                            if approved_edge.effective_date is not None
+                            else None,
+                            plan.company_id,
+                            plan.predecessor.cik,
+                            plan.successor.cik,
+                        ),
+                    )
+                    disposition = "updated"
+                applied = self._load_company_lineage(connection, plan.successor.cik)
+                if applied is None or applied.state_hash != plan.after.state_hash:
+                    raise FilingMetadataError(
+                        "Applied lineage does not match the approved preview."
+                    )
+                return disposition
+            if current.canonical_current_cik != plan.predecessor.cik:
+                raise FilingMetadataError(
+                    "The supplied predecessor is no longer the canonical current CIK."
+                )
+            owner = connection.execute(
+                "SELECT company_id FROM company_ciks WHERE cik = ?",
+                (plan.successor.cik,),
+            ).fetchone()
+            if owner is not None:
+                raise FilingMetadataError(
+                    f"CIK {plan.successor.cik} is already associated with a company."
+                )
+
+            # B -> A (canonical A) becomes B -> A -> N (canonical N) atomically.
+            now = _now()
+            connection.execute(
+                "UPDATE company_ciks SET legal_name = ?, updated_at = ? "
+                "WHERE company_id = ? AND cik = ?",
+                (plan.predecessor.legal_name, now, plan.company_id, plan.predecessor.cik),
+            )
+            connection.execute(
+                "INSERT INTO company_ciks(company_id, cik, legal_name, associated_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    plan.company_id,
+                    plan.successor.cik,
+                    plan.successor.legal_name,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO company_cik_transitions("
+                "company_id, predecessor_cik, successor_cik, created_at, effective_date"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (
+                    plan.company_id,
+                    plan.predecessor.cik,
+                    plan.successor.cik,
+                    now,
+                    approved_edge.effective_date.isoformat()
+                    if approved_edge.effective_date is not None
+                    else None,
+                ),
+            )
+            connection.execute(
+                "UPDATE companies SET cik = ?, current_name = ?, updated_at = ? WHERE id = ?",
+                (plan.successor.cik, plan.successor.legal_name, now, plan.company_id),
+            )
+            applied = self._load_company_lineage(connection, plan.successor.cik)
+            if applied is None or applied.state_hash != plan.after.state_hash:
+                raise FilingMetadataError("Applied lineage does not match the approved preview.")
+            return "created"
+
     @staticmethod
     def _load_company_lineage(connection: sqlite3.Connection, cik: str) -> CompanyLineage | None:
         owner = connection.execute(
@@ -616,6 +752,66 @@ class EvidenceStore:
                 legal_name=str(row["successor_name"]),
             ),
             effective_date=effective_date,
+        )
+
+    @staticmethod
+    def _report_rule_storage_version(
+        connection: sqlite3.Connection,
+        company_id: int,
+        rule_version: str,
+    ) -> str:
+        base_rule_version = _base_report_rule_version(rule_version)
+        if base_rule_version != _LINEAGE_SENSITIVE_REPORT_RULE_VERSION:
+            return base_rule_version
+        rows = connection.execute(
+            "SELECT t.predecessor_cik, t.successor_cik, t.effective_date, "
+            "p.legal_name AS predecessor_name, s.legal_name AS successor_name "
+            "FROM company_cik_transitions AS t "
+            "JOIN company_ciks AS p ON p.company_id = t.company_id "
+            "AND p.cik = t.predecessor_cik "
+            "JOIN company_ciks AS s ON s.company_id = t.company_id "
+            "AND s.cik = t.successor_cik "
+            "WHERE t.company_id = ? AND t.effective_date IS NOT NULL "
+            "ORDER BY t.successor_cik, t.predecessor_cik",
+            (company_id,),
+        ).fetchall()
+        if not rows:
+            return base_rule_version
+        context = {
+            "version": "report-lineage-context-v1",
+            "transitions": [
+                {
+                    "predecessor_cik": str(row["predecessor_cik"]),
+                    "successor_cik": str(row["successor_cik"]),
+                    "effective_date": str(row["effective_date"]),
+                    "predecessor_name": str(row["predecessor_name"]),
+                    "successor_name": str(row["successor_name"]),
+                }
+                for row in rows
+            ],
+        }
+        return (
+            f"{base_rule_version}{_REPORT_RULE_CONTEXT_SEPARATOR}"
+            f"{sha256_text(canonical_json(context))}"
+        )
+
+    @staticmethod
+    def _report_rule_storage_version_for_snapshot(
+        connection: sqlite3.Connection,
+        snapshot_id: int,
+        rule_version: str,
+    ) -> str:
+        row = connection.execute(
+            "SELECT f.company_id FROM evidence_snapshots AS s "
+            "JOIN filings AS f ON f.id = s.filing_id WHERE s.id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown evidence snapshot {snapshot_id}.")
+        return EvidenceStore._report_rule_storage_version(
+            connection,
+            int(row["company_id"]),
+            rule_version,
         )
 
     def publish_filing_window(
@@ -726,15 +922,29 @@ class EvidenceStore:
                         ") VALUES (?, ?, ?)",
                         (filing_id, bindings[filing.accession], _now()),
                     )
+            latest_annual_date = (
+                max(filing.filing_date for filing in annual).isoformat() if annual else None
+            )
+            latest_quarterly_date = (
+                max(filing.filing_date for filing in quarterly).isoformat() if quarterly else None
+            )
             connection.execute(
-                "UPDATE companies SET latest_10k_filing_date = ?, "
-                "latest_10q_filing_date = ?, next_check_date_10k = ?, "
+                "UPDATE companies SET "
+                "latest_10k_filing_date = CASE "
+                "WHEN latest_10k_filing_date IS NULL OR latest_10k_filing_date < ? "
+                "THEN COALESCE(?, latest_10k_filing_date) "
+                "ELSE latest_10k_filing_date END, "
+                "latest_10q_filing_date = CASE "
+                "WHEN latest_10q_filing_date IS NULL OR latest_10q_filing_date < ? "
+                "THEN COALESCE(?, latest_10q_filing_date) "
+                "ELSE latest_10q_filing_date END, "
+                "next_check_date_10k = ?, "
                 "next_check_date_10q = ?, updated_at = ? WHERE id = ?",
                 (
-                    max(filing.filing_date for filing in annual).isoformat() if annual else None,
-                    max(filing.filing_date for filing in quarterly).isoformat()
-                    if quarterly
-                    else None,
+                    latest_annual_date,
+                    latest_annual_date,
+                    latest_quarterly_date,
+                    latest_quarterly_date,
                     next_check_date_10k.isoformat(),
                     next_check_date_10q.isoformat(),
                     _now(),
@@ -757,6 +967,11 @@ class EvidenceStore:
             ).fetchone()
             if company is None:
                 raise MappingInputError(f"No stored company data found for {requested}.")
+            storage_rule_version = self._report_rule_storage_version(
+                connection,
+                int(company["id"]),
+                report_rule_version,
+            )
             rows = connection.execute(
                 "SELECT f.id AS filing_id, f.accession, f.form, f.report_date, "
                 "f.active_window_rank, afs.snapshot_id, s.payload_hash, "
@@ -768,7 +983,7 @@ class EvidenceStore:
                 "AND re.report_kind = ? AND re.rule_version = ? "
                 "WHERE f.company_id = ? AND f.form = ? AND f.is_active = 1 "
                 "ORDER BY f.active_window_rank, f.accession",
-                (report_kind, report_rule_version, int(company["id"]), form),
+                (report_kind, storage_rule_version, int(company["id"]), form),
             ).fetchall()
             if not rows:
                 raise MappingInputError(
@@ -803,7 +1018,7 @@ class EvidenceStore:
                         active_window_rank=int(row["active_window_rank"]),
                         payload_hash=str(row["payload_hash"]),
                         report_evaluation_id=int(row["report_evaluation_id"]),
-                        source_report_rule_version=str(row["rule_version"]),
+                        source_report_rule_version=report_rule_version,
                         company_cik=str(company["cik"]),
                         registrant_cik=registrant_cik,
                         registrant_ciks=registrant_ciks,
@@ -1458,7 +1673,17 @@ class EvidenceStore:
                 installed_artifacts,
                 artifact_ids,
             )
-            self._insert_evaluation(connection, snapshot_id, evaluation, maps)
+            storage_rule_version = self._report_rule_storage_version(
+                connection,
+                company_id,
+                evaluation.rule_version,
+            )
+            self._insert_evaluation(
+                connection,
+                snapshot_id,
+                replace(evaluation, rule_version=storage_rule_version),
+                maps,
+            )
             connection.execute(
                 "UPDATE processing_run_filings SET status = 'stored', completed_at = ?, "
                 "snapshot_id = ? WHERE id = ?",
@@ -1568,10 +1793,15 @@ class EvidenceStore:
         self, snapshot_id: int, report_kind: str, rule_version: str
     ) -> ReportEvaluationRef | None:
         with self.database.connection() as connection:
+            storage_rule_version = self._report_rule_storage_version_for_snapshot(
+                connection,
+                snapshot_id,
+                rule_version,
+            )
             row = connection.execute(
                 "SELECT id, snapshot_id, report_kind, rule_version FROM report_evaluations "
                 "WHERE snapshot_id = ? AND report_kind = ? AND rule_version = ?",
-                (snapshot_id, report_kind, rule_version),
+                (snapshot_id, report_kind, storage_rule_version),
             ).fetchone()
             if row is None:
                 return None
@@ -1579,17 +1809,23 @@ class EvidenceStore:
                 evaluation_id=int(row["id"]),
                 snapshot_id=int(row["snapshot_id"]),
                 report_kind=str(row["report_kind"]),  # type: ignore[arg-type]
-                rule_version=str(row["rule_version"]),
+                rule_version=rule_version,
             )
 
     def save_report_evaluation(
         self, snapshot_id: int, evaluation: ReportEvaluation
     ) -> ReportEvaluationRef:
         with self.database.write_transaction() as connection:
+            storage_rule_version = self._report_rule_storage_version_for_snapshot(
+                connection,
+                snapshot_id,
+                evaluation.rule_version,
+            )
+            stored_evaluation = replace(evaluation, rule_version=storage_rule_version)
             existing = connection.execute(
                 "SELECT id FROM report_evaluations WHERE snapshot_id = ? "
                 "AND report_kind = ? AND rule_version = ?",
-                (snapshot_id, evaluation.report_kind, evaluation.rule_version),
+                (snapshot_id, evaluation.report_kind, storage_rule_version),
             ).fetchone()
             maps = self._existing_maps(connection, snapshot_id)
             if existing is not None:
@@ -1600,7 +1836,12 @@ class EvidenceStore:
                     )
                 evaluation_id = int(existing["id"])
             else:
-                evaluation_id = self._insert_evaluation(connection, snapshot_id, evaluation, maps)
+                evaluation_id = self._insert_evaluation(
+                    connection,
+                    snapshot_id,
+                    stored_evaluation,
+                    maps,
+                )
             return ReportEvaluationRef(
                 evaluation_id=evaluation_id,
                 snapshot_id=snapshot_id,
@@ -1892,6 +2133,11 @@ class EvidenceStore:
         ).fetchone()
         if company is None:
             raise MappingInputError(f"Unknown stored company {company_id}.")
+        storage_rule_version = EvidenceStore._report_rule_storage_version(
+            connection,
+            company_id,
+            report_rule_version,
+        )
         rows = connection.execute(
             "SELECT f.id AS filing_id, f.accession, f.form, f.report_date, "
             "f.active_window_rank, afs.snapshot_id, s.payload_hash, "
@@ -1903,7 +2149,7 @@ class EvidenceStore:
             "AND re.report_kind = ? AND re.rule_version = ? "
             "WHERE f.company_id = ? AND f.form = ? AND f.is_active = 1 "
             "ORDER BY f.active_window_rank, f.accession",
-            (report_kind, report_rule_version, company_id, form),
+            (report_kind, storage_rule_version, company_id, form),
         ).fetchall()
         if not rows:
             raise MappingInputError(f"No active {report_kind} filing window is stored.")
@@ -1935,7 +2181,7 @@ class EvidenceStore:
                     active_window_rank=int(row["active_window_rank"]),
                     payload_hash=str(row["payload_hash"]),
                     report_evaluation_id=int(row["report_evaluation_id"]),
-                    source_report_rule_version=str(row["rule_version"]),
+                    source_report_rule_version=report_rule_version,
                     company_cik=str(company["cik"]),
                     registrant_cik=registrant_cik,
                     registrant_ciks=registrant_ciks,
@@ -3391,7 +3637,7 @@ class EvidenceStore:
             )
         return ReportEvaluation(
             report_kind=str(evaluation["report_kind"]),  # type: ignore[arg-type]
-            rule_version=str(evaluation["rule_version"]),
+            rule_version=_base_report_rule_version(str(evaluation["rule_version"])),
             report_date=date.fromisoformat(str(evaluation["report_date"])),
             statuses=statuses,
             reconciliation_issues=tuple(issues),

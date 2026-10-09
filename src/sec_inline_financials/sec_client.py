@@ -92,19 +92,7 @@ class SecClient:
 
     def resolve_registrant(self, cik: str) -> RegistrantIdentity:
         requested = normalize_cik(cik)
-        payload = self._get_json(f"{_SUBMISSIONS_ROOT}/CIK{requested}.json")
-        if not isinstance(payload, Mapping):
-            raise DiscoveryError("SEC submissions response has an unexpected structure.")
-        try:
-            response_cik = normalize_cik(str(payload["cik"]))
-        except (KeyError, TypeError, ValueError, LineageError) as exc:
-            raise DiscoveryError(
-                f"SEC submissions response for CIK {requested} has no valid CIK."
-            ) from exc
-        if response_cik != requested:
-            raise DiscoveryError(
-                f"SEC submissions response CIK {response_cik} does not match {requested}."
-            )
+        payload = self._submissions_payload(requested)
         legal_name = str(payload.get("name", "")).strip()
         if not legal_name:
             raise DiscoveryError(f"SEC submissions response for CIK {requested} has no name.")

@@ -19,7 +19,7 @@ uv run --no-sync sec-inline-financials-purge msft aapl --execute
 uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK --effective-date YYYY-MM-DD
 
 xom : 0002115436 0000034088
-DKNG: 0001883685 0001772757 
+DKNG: 0001883685 0001772757
 CLMT: 0002013745 0001340122
 HHH: 0001981792 0001498828
 AMAM: 0001836056 0001990550

@@ -249,6 +249,37 @@ def test_store_initialize_requires_explicit_approval_for_existing_upgrade(
     assert status.is_current
 
 
+@pytest.mark.parametrize(
+    ("column", "corrupt_value"),
+    (("filename", "0008_tampered.sql"), ("checksum", "tampered-checksum")),
+)
+def test_schema_inspection_and_initialization_reject_corrupt_applied_migration_ledger(
+    database_at_version: DatabaseAtVersionFactory,
+    column: str,
+    corrupt_value: str,
+) -> None:
+    database_path = database_at_version(9)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            f"UPDATE schema_migrations SET {column} = ? WHERE version = 8",
+            (corrupt_value,),
+        )
+        ledger_before = connection.execute(
+            "SELECT version, filename, checksum, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+
+    with pytest.raises(SchemaError, match="Applied migration 8 does not match packaged"):
+        inspect_database_schema(EvidenceDatabase(database_path))
+    with pytest.raises(SchemaError, match="Applied migration 8 does not match packaged"):
+        initialize_database(EvidenceDatabase(database_path))
+
+    with sqlite3.connect(database_path) as connection:
+        ledger_after = connection.execute(
+            "SELECT version, filename, checksum, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    assert ledger_after == ledger_before
+
+
 def test_migration_rolls_back_when_integrity_check_fails(
     database_at_version: DatabaseAtVersionFactory,
 ) -> None:

@@ -77,6 +77,52 @@ def test_store_publishes_incomplete_or_empty_filing_windows(
     assert state.active_accessions == ()
 
 
+def test_weaker_refresh_preserves_latest_known_filing_dates(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "artifacts")
+    store.initialize()
+    store.publish_filing_window(
+        COMPANY,
+        annual=[],
+        quarterly=[QUARTERLY],
+        snapshot_ids={},
+        next_check_date_10k=date(2026, 10, 1),
+        next_check_date_10q=date(2026, 10, 1),
+    )
+
+    older_quarterly = Filing(
+        accession="0000000123-25-000001",
+        filing_date=date(2025, 5, 1),
+        report_date=date(2025, 3, 31),
+        form="10-Q",
+        primary_document="new-20250331.htm",
+        url=("https://www.sec.gov/Archives/edgar/data/123/000000012325000001/new-20250331.htm"),
+        registrant_cik=COMPANY.cik,
+        archive_owner_cik=COMPANY.cik,
+    )
+    store.publish_filing_window(
+        COMPANY,
+        annual=[],
+        quarterly=[older_quarterly],
+        snapshot_ids={},
+        next_check_date_10k=date(2026, 10, 2),
+        next_check_date_10q=date(2026, 10, 2),
+    )
+    store.publish_filing_window(
+        COMPANY,
+        annual=[],
+        quarterly=[],
+        snapshot_ids={},
+        next_check_date_10k=date(2026, 10, 3),
+        next_check_date_10q=date(2026, 10, 3),
+    )
+
+    state = store.get_company_state(COMPANY.ticker)
+    assert state is not None
+    assert state.latest_10q_filing_date == QUARTERLY.filing_date
+    assert state.next_check_date_10k == date(2026, 10, 3)
+    assert state.next_check_date_10q == date(2026, 10, 3)
+
+
 def test_empty_selected_window_is_a_successful_no_work_run(tmp_path: Path) -> None:
     store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "artifacts")
     store.initialize()

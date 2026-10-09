@@ -8,6 +8,7 @@ from datetime import date
 from sec_inline_financials.arelle_adapter import ArelleProcessor
 from sec_inline_financials.company_ingestion import CompanyIngestionService, IngestionSettings
 from sec_inline_financials.company_lineage import (
+    LineageMaintenanceResult,
     LineageMaintenanceService,
     LineagePatchPlan,
     normalize_cik,
@@ -19,6 +20,7 @@ from sec_inline_financials.storage.evidence_store import EvidenceStore
 
 InputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
+ApplyFn = Callable[[LineagePatchPlan], LineageMaintenanceResult]
 
 
 def _iso_date(value: str) -> date:
@@ -30,12 +32,22 @@ def _iso_date(value: str) -> date:
 
 def _render_plan(plan: LineagePatchPlan, output_fn: OutputFn) -> None:
     canonical = plan.before.current_to_oldest[0]
+    if canonical.cik == plan.predecessor.cik:
+        canonical = plan.predecessor
+    elif canonical.cik == plan.successor.cik:
+        canonical = plan.successor
     output_fn("Canonical company")
     output_fn(f"  {canonical.legal_name} (current CIK {plan.before.canonical_current_cik})")
     output_fn("")
     output_fn("Existing lineage")
     for member in plan.before.current_to_oldest:
-        name = plan.successor.legal_name if member.cik == plan.successor.cik else member.legal_name
+        name = (
+            plan.predecessor.legal_name
+            if member.cik == plan.predecessor.cik
+            else plan.successor.legal_name
+            if member.cik == plan.successor.cik
+            else member.legal_name
+        )
         output_fn(f"  {member.cik}  {name}")
     output_fn("")
     output_fn("Proposed direct edge")
@@ -54,38 +66,32 @@ def _render_plan(plan: LineagePatchPlan, output_fn: OutputFn) -> None:
 
 
 def _rerun_command(
-    successor_cik: str,
-    predecessor_cik: str,
+    command_name: str,
+    first_cik: str,
+    second_cik: str,
     *,
     effective_date: date | None,
 ) -> str:
-    command = f"sec-inline-financials-lineage {successor_cik} {predecessor_cik}"
+    command = f"{command_name} {first_cik} {second_cik}"
     if effective_date is not None:
         command = f"{command} --effective-date {effective_date.isoformat()}"
     return command
 
 
-def run_lineage_command(
-    service: LineageMaintenanceService,
-    successor_cik: str,
-    predecessor_cik: str,
+def _run_approved_plan(
+    plan: LineagePatchPlan,
     *,
-    effective_date: date | None = None,
-    input_fn: InputFn = input,
-    output_fn: OutputFn = print,
+    prompt: str,
+    apply_and_ingest: ApplyFn,
+    rerun_command: str,
+    input_fn: InputFn,
+    output_fn: OutputFn,
 ) -> int:
     try:
-        plan = service.preview_link(
-            successor_cik,
-            predecessor_cik,
-            effective_date=effective_date,
-        )
         _render_plan(plan, output_fn)
         while True:
             try:
-                answer = input_fn(
-                    "Create this lineage and ingest the predecessor's filings? [y/n]: "
-                ).strip()
+                answer = input_fn(prompt).strip()
             except EOFError:
                 answer = ""
             if answer.lower() == "y":
@@ -97,27 +103,21 @@ def run_lineage_command(
     except KeyboardInterrupt:
         output_fn("Lineage cancelled; no lineage or ingestion changes made.")
         return 130
-    except ExplorerError as exc:
-        output_fn(f"Error: {exc}")
-        return 1
 
     try:
-        result = service.apply_and_ingest(plan)
+        result = apply_and_ingest(plan)
     except KeyboardInterrupt:
         output_fn("Interrupted after approval; the lineage may already be committed.")
         output_fn("Rerun this same command to retry ingestion safely.")
+        output_fn(f"Rerun: {rerun_command}")
         return 130
     except ExplorerError as exc:
         output_fn(f"Error: {exc}")
         output_fn("If the lineage was committed before ingestion failed, rerun this same command.")
+        output_fn(f"Rerun: {rerun_command}")
         return 1
 
     output_fn(f"Lineage: {result.disposition}")
-    rerun_command = _rerun_command(
-        successor_cik,
-        predecessor_cik,
-        effective_date=effective_date,
-    )
     ingestion_status = getattr(result.ingestion, "status", None)
     if ingestion_status is not None:
         output_fn(f"Ingestion: {ingestion_status}")
@@ -135,6 +135,80 @@ def run_lineage_command(
         output_fn(f"Rerun: {rerun_command}")
         return 1
     return 0
+
+
+def run_lineage_command(
+    service: LineageMaintenanceService,
+    successor_cik: str,
+    predecessor_cik: str,
+    *,
+    effective_date: date | None = None,
+    input_fn: InputFn = input,
+    output_fn: OutputFn = print,
+) -> int:
+    try:
+        plan = service.preview_link(
+            successor_cik,
+            predecessor_cik,
+            effective_date=effective_date,
+        )
+    except KeyboardInterrupt:
+        output_fn("Lineage cancelled; no lineage or ingestion changes made.")
+        return 130
+    except ExplorerError as exc:
+        output_fn(f"Error: {exc}")
+        return 1
+    rerun_command = _rerun_command(
+        "sec-inline-financials-lineage",
+        successor_cik,
+        predecessor_cik,
+        effective_date=effective_date,
+    )
+    return _run_approved_plan(
+        plan,
+        prompt="Create this lineage and ingest the predecessor's filings? [y/n]: ",
+        apply_and_ingest=service.apply_and_ingest,
+        rerun_command=rerun_command,
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+
+
+def run_successor_promotion_command(
+    service: LineageMaintenanceService,
+    predecessor_cik: str,
+    successor_cik: str,
+    *,
+    effective_date: date | None = None,
+    input_fn: InputFn = input,
+    output_fn: OutputFn = print,
+) -> int:
+    try:
+        plan = service.preview_successor_promotion(
+            predecessor_cik,
+            successor_cik,
+            effective_date=effective_date,
+        )
+    except KeyboardInterrupt:
+        output_fn("Lineage cancelled; no lineage or ingestion changes made.")
+        return 130
+    except ExplorerError as exc:
+        output_fn(f"Error: {exc}")
+        return 1
+    rerun_command = _rerun_command(
+        "sec-inline-financials-lineage-change",
+        predecessor_cik,
+        successor_cik,
+        effective_date=effective_date,
+    )
+    return _run_approved_plan(
+        plan,
+        prompt="Create this lineage and ingest the successor's filings? [y/n]: ",
+        apply_and_ingest=service.apply_successor_and_ingest,
+        rerun_command=rerun_command,
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -183,6 +257,59 @@ def main(argv: Sequence[str] | None = None) -> int:
             service,
             successor_cik,
             predecessor_cik,
+            effective_date=args.effective_date,
+        )
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+
+def promotion_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Promote an exact successor CIK and ingest its filings."
+    )
+    parser.add_argument("predecessor_cik")
+    parser.add_argument("successor_cik")
+    parser.add_argument(
+        "--effective-date",
+        type=_iso_date,
+        help="verified legal transition date (YYYY-MM-DD)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        predecessor_cik = normalize_cik(args.predecessor_cik)
+        successor_cik = normalize_cik(args.successor_cik)
+        settings = IngestionSettings.from_environment(environment=os.environ)
+        store = EvidenceStore(settings.database_path, settings.artifact_root)
+        try:
+            if not ensure_schema_upgrade_approved(store):
+                return 0
+        except KeyboardInterrupt:
+            return 130
+
+        sec_client = SecClient(user_agent=settings.sec_user_agent)
+        ingestion_service = CompanyIngestionService(
+            store=store,
+            sec_gateway_factory=lambda: sec_client,
+            processor_factory=lambda: ArelleProcessor(
+                user_agent=settings.sec_user_agent,
+                cache_directory=settings.cache_directory,
+            ),
+            progress=lambda message: print(f"[progress] {message}"),
+        )
+        service = LineageMaintenanceService(
+            store=store,
+            registrant_resolver=sec_client,
+            ingest_company_cik=lambda cik: ingestion_service.ingest_company_cik(
+                cik,
+                annual_count=settings.annual_count,
+                quarterly_count=settings.quarterly_count,
+            ),
+        )
+        return run_successor_promotion_command(
+            service,
+            predecessor_cik,
+            successor_cik,
             effective_date=args.effective_date,
         )
     except ExplorerError as exc:

@@ -58,6 +58,7 @@ def source_manifest_hash(bundle: FilingEvidenceBundle) -> str:
 
 def payload_json(bundle: FilingEvidenceBundle) -> str:
     serialization_version = bundle.extraction_profile.serialization_version
+    modern_serialization = serialization_version in {"evidence-v2", "evidence-v3"}
     validation = [
         {
             "message_order": record.message_order,
@@ -90,7 +91,9 @@ def payload_json(bundle: FilingEvidenceBundle) -> str:
     ]
     payload: dict[str, object] = {
         "version": (
-            "evidence-payload-v2"
+            "evidence-payload-v3"
+            if serialization_version == "evidence-v3"
+            else "evidence-payload-v2"
             if serialization_version == "evidence-v2"
             else "evidence-payload-v1"
         ),
@@ -101,8 +104,6 @@ def payload_json(bundle: FilingEvidenceBundle) -> str:
             "report_date": bundle.filing.report_date,
             "primary_document": bundle.filing.primary_document,
             "source_url": bundle.filing.url,
-            "registrant_cik": bundle.filing.registrant_cik,
-            "archive_owner_cik": bundle.filing.archive_owner_cik,
         },
         "fiscal_year": bundle.fiscal_year,
         "fiscal_period": bundle.fiscal_period,
@@ -136,12 +137,15 @@ def payload_json(bundle: FilingEvidenceBundle) -> str:
             key=lambda item: (item.arcrole_uri, item.role_uri, item.relationship_order),
         ),
         "coverage_manifest": (
-            bundle.coverage_manifest
-            if serialization_version == "evidence-v2"
-            else _v1_coverage_manifest(bundle)
+            bundle.coverage_manifest if modern_serialization else _v1_coverage_manifest(bundle)
         ),
     }
-    if serialization_version == "evidence-v2":
+    if serialization_version == "evidence-v3":
+        filing_payload = payload["filing"]
+        assert isinstance(filing_payload, dict)
+        filing_payload["registrant_cik"] = bundle.filing.registrant_cik
+        filing_payload["archive_owner_cik"] = bundle.filing.archive_owner_cik
+    if modern_serialization:
         payload["filing_sections"] = sorted(
             bundle.filing_sections, key=lambda item: item.section_order
         )
