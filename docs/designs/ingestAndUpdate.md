@@ -29,11 +29,28 @@ uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
+The request-triggered stored-company scanner is:
+
+```powershell
+uv run --no-sync sec-inline-financials-scan
+```
+
+It reads the stored ticker set and next-check dates from `EvidenceStore`. Tickers
+whose annual and quarterly dates are both in the future are reported as current and
+do not enter ingestion or mapping. A missing/due date or `--force` passes the ticker
+through the existing `CompanyIngestionService` SEC and publication sequence. The
+scan continues after one company fails, reports a final summary, and exits nonzero
+for raised company errors or `refresh_failed_using_local_data` results.
+
 The public Python entry point is:
 
 ```text
 ingest_company(ticker, settings, progress=None)
     -> CompanyIngestionResult
+
+scan_companies(store=..., service=..., annual_count=5, quarterly_count=12,
+               force_refresh=False, checked_on=None)
+    -> CompanyScanResult
 ```
 
 The wrapper does not silently authorize upgrades to an existing evidence database.
@@ -119,9 +136,10 @@ The requested counts are upper bounds, not a completeness gate. If SEC history h
 fewer eligible filings than requested for either form, discovery returns every
 eligible filing it found. The shortage is reported as a coverage warning and does
 not count as an ingestion failure. Each found filing still continues through Arelle,
-evidence storage, classification, and Direct Mapping. Annual and quarterly mapping
-are evaluated independently, so an empty form does not prevent mapping the other
-non-empty form. No placeholder filing or period is created for missing history.
+evidence storage, and classification. Direct Mapping runs after publication only
+when at least one newly discovered accession was processed successfully. A current
+request or SEC check with no new accession does not evaluate or reuse mapping. No
+placeholder filing or period is created for missing history.
 
 `10-K/A` and `10-Q/A` do not consume window positions because discovery requests
 exact forms. SEC submissions provide identity and filing URLs; financial values come
@@ -252,7 +270,8 @@ SEC discovery selected at least one accession not previously known to the store.
 
 `checked_no_update`
 SEC was checked, but no newly selected accession was found. The run may still have
-created newer-profile snapshots, such as the `evidence-v3` section backfill.
+created newer-profile snapshots, such as the `evidence-v3` section backfill. Direct
+Mapping is not run.
 
 `checked_no_filings`
 SEC and every stored lineage member were checked, but neither form produced an
@@ -260,7 +279,8 @@ eligible filing. No placeholder filing, snapshot, period, or mapping result is
 created.
 
 `reused_local`
-The local active window was complete and current, so SEC and Arelle were skipped.
+The local active window was complete and current, so SEC, Arelle, and Direct Mapping
+were skipped.
 
 `refresh_failed_using_local_data`
 SEC discovery or filing processing failed for a company with usable stored evidence;
@@ -314,9 +334,10 @@ report plus a complete-facts JSON export. The two ingestion console scripts do n
 generate reports; `sec-inline-financials-map` evaluates only stored evidence.
 
 Direct Mapping and metric-result persistence are implemented by the separate
-Milestone 2 components. After a successful active-window publication, ingestion
-evaluates or reuses mapping in a separate failure boundary; mapping failure cannot
-roll back evidence or change the ingestion status. LLM evidence
+Milestone 2 components. After a refresh successfully processes a newly discovered
+accession and publishes the active window, ingestion evaluates mapping in a separate
+failure boundary; mapping failure cannot roll back evidence or change the ingestion
+status. Current requests and unchanged SEC checks skip mapping. LLM evidence
 packets/recommendations, human review, API endpoints, evidence downloads, and the
 browser frontend remain planned. Ingestion does not synchronize a retrieval index.
 

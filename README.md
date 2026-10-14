@@ -25,9 +25,10 @@ metrics and a local frontend with evidence downloads and mapping review.
 
 Reports are generated only from stored snapshots and their persisted `report-v2`
 evaluations. The interactive script in `tests/inspect_inline_ingestion.py` does not
-contact the SEC or open Arelle. The two ingestion commands also evaluate or reuse
-Direct Mapping after evidence publication; `sec-inline-financials` adds elapsed
-time and the resolved storage paths. `sec-inline-financials-map` runs only the
+contact the SEC or open Arelle. Ingestion evaluates Direct Mapping only after a
+refresh successfully publishes a newly discovered accession; current requests and
+SEC checks with no new accession skip mapping. `sec-inline-financials` adds elapsed
+time and the resolved storage paths. `sec-inline-financials-map` runs the explicit
 stored-evidence mapping path.
 
 The evidence-ingestion path detaches every Arelle-exposed observation, stores linked
@@ -244,6 +245,22 @@ uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 The final summaries remain on stdout, so progress and machine-consumable results
 can be redirected independently.
 
+Scan every company already stored in the evidence database:
+
+```powershell
+uv run --no-sync sec-inline-financials-scan
+```
+
+The scanner compares each stored company's annual and quarterly next-check dates
+locally. Companies with both dates in the future are reported as `current` and do
+not enter ingestion or Direct Mapping. Due or `--force` companies use the existing
+ingestion service to check the SEC and publish any updated filing window. Mapping
+runs only when that refresh successfully adds a newly discovered accession. The
+scan is sequential, continues after a per-company error, prints a final
+company/due/SEC-check/update/failure summary, and exits nonzero when a refresh fails,
+including when older local evidence remains available as a fallback. Running the
+scanner is still explicit; these next-check dates do not start a background job.
+
 The first successful call returns `initialized`. Later calls first inspect local
 state. A complete current window returns `reused_local` without SEC or Arelle until
 an annual/quarterly check is due. `--force`, missing evidence, or an active legacy
@@ -316,7 +333,9 @@ The operation deletes the selected companies as one SQLite transaction, refuses 
 run while any ingestion is active, removes company-owned `staging/<attempt-id>`
 directories, and removes immutable objects only when no unselected company still
 references them. File deletion is journaled after the database commit and can be
-retried with `sec-inline-financials-purge --cleanup-pending`. The shared SEC
+retried with `sec-inline-financials-purge --cleanup-pending`. After deletion, the
+purge compacts `evidence.sqlite3` so freed SQLite pages are returned to the
+filesystem. The shared SEC
 transform-plugin cache and manually generated files under `output/` are not
 company-owned and are not deleted.
 
@@ -390,10 +409,12 @@ Arelle, not from the SEC Company Facts API.
   facts must span 300–400 days. Quarterly duration facts must span 60–120 days,
   so six- and nine-month year-to-date facts are excluded from quarterly cells.
 - Quarter-end instant facts are eligible in the quarterly report.
-- The current table uses eligible dimension-free facts as its primary values.
-  Direct Mapping additionally verifies entity and Target Metric scope.
-- Dimensional-only concepts remain visible as `DIMENSIONAL [D...]`, with their
-  components below the table.
+- The current table uses eligible dimension-free facts as each concept's consolidated
+  value. Direct Mapping additionally verifies entity and Target Metric scope.
+- Every dimensional fact appears immediately below its concept with its actual value,
+  complete axis/member scope, and a component reference such as `[D001.2]`.
+- When dimensional facts exist without an eligible dimension-free fact, the concept row
+  says `NO CONSOLIDATED FACT [D...]`. Dimensional values are never automatically summed.
 - Exact dimension-free duplicates collapse to the most precise reported fact.
 - Conflicting values are shown as `CONFLICT [R...]` and quarantined. They are
   never averaged or guessed.
@@ -402,6 +423,8 @@ Arelle, not from the SEC Company Facts API.
   report, not proof that the filing contains no relevant evidence.
 - `[E...]` references connect table cells to Arelle fact evidence: raw value,
   label, period, unit, decimals, dimensions, validity, filing, and accession.
+- Component references such as `[D001.2]` connect dimensional child rows to their
+  exact dimensional evidence component.
 - Arelle calculation relationships and warning/error messages follow the fact
   evidence. Calculation 1.0 validation runs in deduplicating mode (`c10d`).
 

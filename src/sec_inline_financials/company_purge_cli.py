@@ -119,7 +119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {exc}")
         return 1
 
-    print("Database purge committed.")
+    print("Database purge committed and compacted.")
     _print_cleanup(result.cleanup)
     return 1 if result.cleanup.failures else 0
 

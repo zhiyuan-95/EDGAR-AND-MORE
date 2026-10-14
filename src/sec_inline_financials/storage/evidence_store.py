@@ -433,6 +433,17 @@ class EvidenceStore:
             return None
         return self.get_company_state(str(row["ticker"]))
 
+    def list_company_tickers(self) -> tuple[str, ...]:
+        """Return every stored ticker in deterministic scan order."""
+        with self.database.connection() as connection:
+            return tuple(
+                str(row["ticker"])
+                for row in connection.execute(
+                    "SELECT ticker FROM companies WHERE ticker IS NOT NULL "
+                    "AND trim(ticker) <> '' ORDER BY upper(ticker), ticker"
+                )
+            )
+
     def load_company_lineage(self, cik: str) -> CompanyLineage | None:
         """Load and validate the complete stored lineage containing ``cik``."""
         normalized = normalize_cik(cik)

@@ -44,6 +44,11 @@ IngestionStatus = Literal[
 _TICKER_PATTERN = re.compile(r"[A-Z0-9.-]{1,10}")
 
 
+def _validate_filing_counts(annual_count: int, quarterly_count: int) -> None:
+    if annual_count < 1 or quarterly_count < 1:
+        raise IngestionError("Annual and quarterly filing counts must both be positive.")
+
+
 class CompanySecGateway(SecGateway, Protocol):
     def discover_company_window(
         self,
@@ -100,6 +105,30 @@ class CompanyIngestionResult:
     mapping_error: str | None = None
 
 
+@dataclass(frozen=True)
+class CompanyScanFailure:
+    ticker: str
+    error: str
+
+
+@dataclass(frozen=True)
+class CompanyScanResult:
+    current_tickers: tuple[str, ...]
+    results: tuple[CompanyIngestionResult, ...]
+    failures: tuple[CompanyScanFailure, ...]
+
+    @property
+    def failed_count(self) -> int:
+        fallback_failures = sum(
+            result.status == "refresh_failed_using_local_data" for result in self.results
+        )
+        return len(self.failures) + fallback_failures
+
+    @property
+    def has_failures(self) -> bool:
+        return self.failed_count > 0
+
+
 class CompanyIngestionService:
     """Request-triggered company refresh over immutable filing evidence."""
 
@@ -129,8 +158,7 @@ class CompanyIngestionService:
         requested = ticker.strip().upper()
         if _TICKER_PATTERN.fullmatch(requested) is None:
             raise IngestionError("Ticker must contain 1-10 letters, digits, dots, or hyphens.")
-        if annual_count < 1 or quarterly_count < 1:
-            raise IngestionError("Annual and quarterly filing counts must both be positive.")
+        _validate_filing_counts(annual_count, quarterly_count)
 
         self._progress(f"Initializing evidence storage for {requested}...")
         self._store.initialize()
@@ -155,7 +183,6 @@ class CompanyIngestionService:
         )
         if previous is not None and not should_check_sec:
             self._progress(f"Stored evidence is current for {requested}; SEC check skipped.")
-            mapping, mapping_error = self._evaluate_mapping(requested)
             return CompanyIngestionResult(
                 company=previous.company,
                 status="reused_local",
@@ -163,8 +190,6 @@ class CompanyIngestionService:
                 annual_check_due=False,
                 quarterly_check_due=False,
                 active_accessions=previous.active_accessions,
-                mapping=mapping,
-                mapping_error=mapping_error,
             )
 
         try:
@@ -271,7 +296,7 @@ class CompanyIngestionService:
         quarterly_due: bool,
         today: date,
     ) -> CompanyIngestionResult:
-        """Process, publish, and map one already-resolved current-first filing window."""
+        """Process and publish a window, mapping only successfully added filing data."""
         known_accessions = set(previous.known_accessions if previous is not None else ())
         selected = (*annual, *quarterly)
         coverage_warning = _coverage_warning(
@@ -382,7 +407,13 @@ class CompanyIngestionService:
             status = "updated"
         else:
             status = "checked_no_update"
-        mapping, mapping_error = self._evaluate_mapping(company.ticker)
+        mapping: CompanyMappingResult | None = None
+        mapping_error: str | None = None
+        successful_new_accessions = tuple(
+            accession for accession in new_accessions if accession not in failed_accessions
+        )
+        if successful_new_accessions:
+            mapping, mapping_error = self._evaluate_mapping(company.ticker)
         self._progress(f"Completed ingestion for {company.ticker}: {status}.")
         return CompanyIngestionResult(
             company=company,
@@ -439,6 +470,27 @@ def _cached_sec_gateway_factory(
     return get_sec_client
 
 
+def _build_ingestion_service(
+    settings: IngestionSettings,
+    *,
+    store: EvidenceStore,
+    progress: Callable[[str], None] | None = None,
+    sec_gateway_factory: Callable[[], CompanySecGateway] | None = None,
+    today_fn: Callable[[], date] | None = None,
+) -> CompanyIngestionService:
+    gateway_factory = sec_gateway_factory or _cached_sec_gateway_factory(settings)
+    return CompanyIngestionService(
+        store=store,
+        sec_gateway_factory=gateway_factory,
+        processor_factory=lambda: ArelleProcessor(
+            user_agent=_require_sec_user_agent(settings),
+            cache_directory=settings.cache_directory,
+        ),
+        today_fn=today_fn or date.today,
+        progress=progress,
+    )
+
+
 def ingest_company(
     ticker: str,
     settings: IngestionSettings,
@@ -448,23 +500,63 @@ def ingest_company(
 ) -> CompanyIngestionResult:
     """Ingest or update one company, contacting the SEC only when required."""
     store = EvidenceStore(settings.database_path, settings.artifact_root)
-    if sec_gateway_factory is None:
-        sec_gateway_factory = _cached_sec_gateway_factory(settings)
-
-    service = CompanyIngestionService(
+    service = _build_ingestion_service(
+        settings,
         store=store,
-        sec_gateway_factory=sec_gateway_factory,
-        processor_factory=lambda: ArelleProcessor(
-            user_agent=_require_sec_user_agent(settings),
-            cache_directory=settings.cache_directory,
-        ),
         progress=progress,
+        sec_gateway_factory=sec_gateway_factory,
     )
     return service.ingest_company(
         ticker,
         annual_count=settings.annual_count,
         quarterly_count=settings.quarterly_count,
         force_refresh=settings.force_refresh,
+    )
+
+
+def scan_companies(
+    *,
+    store: EvidenceStore,
+    service: CompanyIngestionService,
+    annual_count: int = 5,
+    quarterly_count: int = 12,
+    force_refresh: bool = False,
+    checked_on: date | None = None,
+) -> CompanyScanResult:
+    """Refresh only stored tickers whose annual or quarterly check is due."""
+    _validate_filing_counts(annual_count, quarterly_count)
+    store.initialize()
+    today = checked_on or date.today()
+    current_tickers: list[str] = []
+    results: list[CompanyIngestionResult] = []
+    failures: list[CompanyScanFailure] = []
+    for ticker in store.list_company_tickers():
+        state = store.get_company_state(ticker)
+        if state is None:
+            failures.append(
+                CompanyScanFailure(ticker=ticker, error="Stored company state is unavailable.")
+            )
+            continue
+        annual_due = _check_is_due(state.next_check_date_10k, today)
+        quarterly_due = _check_is_due(state.next_check_date_10q, today)
+        if not force_refresh and not annual_due and not quarterly_due:
+            current_tickers.append(ticker)
+            continue
+        try:
+            results.append(
+                service.ingest_company(
+                    ticker,
+                    annual_count=annual_count,
+                    quarterly_count=quarterly_count,
+                    force_refresh=force_refresh,
+                )
+            )
+        except ExplorerError as exc:
+            failures.append(CompanyScanFailure(ticker=ticker, error=str(exc)))
+    return CompanyScanResult(
+        current_tickers=tuple(current_tickers),
+        results=tuple(results),
+        failures=tuple(failures),
     )
 
 
@@ -683,6 +775,78 @@ def _print_cli_result(result: CompanyIngestionResult) -> None:
             print(f"Quarterly mapping: not run ({result.mapping.quarterly_error})")
     if result.mapping_error:
         print(f"Mapping warning: {result.mapping_error}")
+
+
+def _pluralized_count(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+
+def _print_scan_result(result: CompanyScanResult) -> None:
+    for ticker in result.current_tickers:
+        print(f"{ticker}: current")
+    for company_result in result.results:
+        _print_cli_result(company_result)
+    for failure in result.failures:
+        print(f"{failure.ticker}: Error: {failure.error}")
+    company_count = len(result.current_tickers) + len(result.results) + len(result.failures)
+    due_count = len(result.results) + len(result.failures)
+    sec_check_count = sum(item.checked_sec for item in result.results)
+    updated_count = sum(item.status in {"initialized", "updated"} for item in result.results)
+    print(
+        "Scan summary: "
+        f"{_pluralized_count(company_count, 'company', 'companies')}; "
+        f"{due_count} due; "
+        f"{_pluralized_count(sec_check_count, 'SEC check')}; "
+        f"{updated_count} updated; {result.failed_count} failed."
+    )
+
+
+def scan_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Check every stored company and refresh SEC filing evidence when needed."
+    )
+    parser.add_argument("--annual-count", type=int, default=5)
+    parser.add_argument("--quarterly-count", type=int, default=12)
+    parser.add_argument("--force", action="store_true", help="Check SEC even when not yet due.")
+    args = parser.parse_args(argv)
+    settings = replace(
+        IngestionSettings.from_environment(),
+        annual_count=args.annual_count,
+        quarterly_count=args.quarterly_count,
+        force_refresh=args.force,
+    )
+    store = EvidenceStore(settings.database_path, settings.artifact_root)
+    try:
+        if not ensure_schema_upgrade_approved(store):
+            return 0
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    checked_on = date.today()
+    service = _build_ingestion_service(
+        settings,
+        store=store,
+        progress=_print_cli_progress,
+        today_fn=lambda: checked_on,
+    )
+    try:
+        result = scan_companies(
+            store=store,
+            service=service,
+            annual_count=settings.annual_count,
+            quarterly_count=settings.quarterly_count,
+            force_refresh=settings.force_refresh,
+            checked_on=checked_on,
+        )
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    _print_scan_result(result)
+    return 1 if result.has_failures else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

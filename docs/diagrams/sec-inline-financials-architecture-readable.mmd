@@ -1,0 +1,17 @@
+%%{init: {"flowchart": {"htmlLabels": false}, "theme": "base", "themeVariables": {"fontFamily": "Arial, Helvetica, sans-serif", "fontSize": "20px", "primaryColor": "#eaf2ff", "primaryTextColor": "#102a43", "primaryBorderColor": "#2563eb", "lineColor": "#334155", "background": "#f8fafc"}}}%%
+graph LR
+    Operator["Local operator"] --> CLI["CLI entry points"]
+    CLI --> Services["Ingest, scan, map, lineage, and purge services"]
+    Services -->|"discovery metadata"| SEC["SEC EDGAR"]
+    Services -->|"one filing per session"| Arelle["Arelle"]
+    Arelle --> Extract["Detach evidence and narrative sections"]
+    Extract --> Classify["report-v2 classification"]
+    Classify --> Store["EvidenceStore"]
+    Services --> Store
+    Store --> Mapping["direct-mapping-v2"]
+    Mapping --> Store
+    Store --> SQLite["SQLite evidence database"]
+    Store --> Objects["SHA-256 artifact store"]
+    Store --> Inspect["Read-only inspection"]
+    Inspect --> Outputs["TXT and JSON outputs"]
+    Planned["Planned API, frontend, and LLM review (future)"] --> Store

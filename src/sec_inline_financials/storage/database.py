@@ -90,3 +90,15 @@ class EvidenceDatabase:
                 if connection.in_transaction:
                     connection.execute("ROLLBACK")
                 raise
+
+    def compact(self) -> None:
+        """Rewrite the database so pages freed by an explicit purge return to the filesystem."""
+        with self.connection() as connection:
+            try:
+                connection.execute("VACUUM")
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    raise DatabaseBusyError(f"Evidence database is busy: {self.path}") from exc
+                raise EvidenceStorageError(
+                    f"Could not compact evidence database {self.path}: {exc}"
+                ) from exc

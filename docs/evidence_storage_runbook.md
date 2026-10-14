@@ -65,6 +65,22 @@ uv run --no-sync sec-inline-financials-ingest AAPL MSFT NVDA
 uv run --no-sync python -m sec_inline_financials.company_ingestion AAPL
 ```
 
+To scan every company already present in the evidence database, run:
+
+```powershell
+uv run --no-sync sec-inline-financials-scan
+```
+
+This command compares both next-check dates for every stored ticker before entering
+ingestion. Companies with future dates are reported as `current` without SEC access
+or Direct Mapping. A missing/due next-check date or `--force` enters the existing
+`CompanyIngestionService` SEC discovery and publication path. Direct Mapping runs
+only when that refresh successfully adds a newly discovered accession; an unchanged
+SEC result only advances the relevant next-check date. The scanner continues after
+individual failures and exits nonzero if any refresh fails, including a
+`refresh_failed_using_local_data` fallback. It is request-triggered and does not
+install or start a scheduler.
+
 For programmatic request-triggered ingestion, use the same public service as the
 CLI:
 
@@ -77,12 +93,14 @@ settings = IngestionSettings.from_environment(working_directory=Path.cwd())
 result = ingest_company("MSFT", settings, progress=print)
 ```
 
-The result is `reused_local` without SEC or Arelle when the active window is complete
-and its next-check dates are current. A due/forced request, missing evidence, or an
-active legacy snapshot without narrative sections enters SEC discovery and processes
-the selected window. Legacy `evidence-v1` and `evidence-v2` snapshots remain
-immutable; the current `evidence-v3` profile retains `filing_sections` and adds
-registrant/archive-owner CIK provenance to the semantic payload identity.
+The result is `reused_local` without SEC, Arelle, or Direct Mapping when the active
+window is complete and its next-check dates are current. A due/forced request,
+missing evidence, or an active legacy snapshot without narrative sections enters SEC
+discovery and processes the selected window. Direct Mapping runs only if the refresh
+successfully adds a newly discovered accession. Legacy `evidence-v1` and
+`evidence-v2` snapshots remain immutable; the current `evidence-v3` profile retains
+`filing_sections` and adds registrant/archive-owner CIK provenance to the semantic
+payload identity.
 
 When processing occurs, `result.run` contains a run ID and one stored, reused, or
 failed outcome per filing. Each filing commits independently. A failed filing cannot
@@ -307,6 +325,11 @@ retry. The purge removes per-attempt Arelle cache and capture data under
 `staging/<attempt-id>`, but preserves the shared pinned SEC transform-plugin cache.
 It also preserves manually generated `output/` reports, because those are
 user-requested exports rather than database-attached evidence.
+
+After the company transaction and queued file cleanup, purge runs SQLite `VACUUM`
+to return freed database pages to the filesystem. This rewrite can take additional
+time and temporary disk space, but it makes the reduced `evidence.sqlite3` size
+visible in filesystem tools instead of retaining the deleted pages for reuse.
 
 Filesystem deletion is recorded in `pending_file_deletions` in the same SQLite
 transaction. If Windows has a file locked, the company database purge remains

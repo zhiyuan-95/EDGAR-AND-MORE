@@ -1,0 +1,126 @@
+classDiagram
+    direction LR
+
+    class CompanyIngestionService {
+        +ingest_company(ticker, counts, force) CompanyIngestionResult
+        +ingest_company_cik(cik, counts) CompanyIngestionResult
+        -_ingest_resolved_company(...) CompanyIngestionResult
+        -_evaluate_mapping(ticker)
+    }
+
+    class EvidenceIngestionService {
+        +ingest_filing(company, filing) FilingOutcome
+        +ingest_selected_window(company, annual, quarterly) RunOutcome
+        -_ingest_with_run(run_id, company, filing) FilingOutcome
+    }
+
+    class SecClient {
+        +resolve_company(ticker) Company
+        +resolve_registrant(cik) RegistrantIdentity
+        +discover_company_window(lineage, counts) DiscoveredCompanyWindow
+    }
+
+    class ArelleProcessor {
+        +extract_evidence(company, filing, capture_area) FilingEvidenceBundle
+        +extraction_profile() ExtractionProfile
+    }
+
+    class EvidenceStore {
+        +initialize(allow_schema_upgrade) int
+        +get_company_state(ticker) StoredCompanyState
+        +publish_filing_window(...)
+        +save_snapshot(bundle, evaluation, attempt, artifacts) StoreResult
+        +list_mapping_inputs(ticker, kind, rule) MappingSnapshotInput[]
+        +save_and_publish_metric_evaluation(...) MetricEvaluationRef
+    }
+
+    class EvidenceDatabase {
+        +connection()
+        +read_connection()
+        +write_transaction()
+        +compact()
+    }
+
+    class ArtifactStore {
+        +stage_directory(attempt) Path
+        +install(path, metadata) InstalledArtifact
+        +resolve(path, sha256, size) Path
+        +remove_object(path) bool
+    }
+
+    class DirectMappingService {
+        +evaluate_company(ticker, require_complete_window) CompanyMappingResult
+        -_evaluate_kind(ticker, kind, snapshots) MetricEvaluationRef
+    }
+
+    class LineageMaintenanceService {
+        +preview_link(successor, predecessor, date) LineagePatchPlan
+        +preview_successor_promotion(predecessor, successor, date) LineagePatchPlan
+        +apply_and_ingest(plan) LineageMaintenanceResult
+    }
+
+    class CompanyDataPurger {
+        +preview(tickers) CompanyPurgePlan
+        +purge(tickers) CompanyPurgeResult
+        +cleanup_pending_files() FileCleanupReport
+    }
+
+    class Company {
+        +ticker: str
+        +cik: str
+        +name: str
+    }
+
+    class Filing {
+        +accession: str
+        +form: str
+        +filing_date: date
+        +report_date: date
+        +registrant_cik: str
+        +archive_owner_cik: str
+    }
+
+    class FilingEvidenceBundle {
+        +company: Company
+        +filing: Filing
+        +source_documents
+        +contexts
+        +units
+        +observations
+        +validation_messages
+        +calculation_relationships
+    }
+
+    class ReportEvaluation {
+        +report_kind
+        +rule_version
+        +report_date
+        +statuses
+        +reconciliation_issues
+    }
+
+    class MetricWindowEvaluation {
+        +report_kind
+        +mapping_rule_version
+        +source_report_rule_version
+        +snapshots
+        +results
+    }
+
+    CompanyIngestionService --> SecClient : discovers
+    CompanyIngestionService --> EvidenceIngestionService : delegates
+    CompanyIngestionService --> DirectMappingService : evaluates new data
+    CompanyIngestionService --> EvidenceStore : reads and publishes
+    EvidenceIngestionService --> ArelleProcessor : extracts
+    EvidenceIngestionService --> EvidenceStore : persists attempts
+    ArelleProcessor ..> FilingEvidenceBundle : creates
+    FilingEvidenceBundle *-- Company
+    FilingEvidenceBundle *-- Filing
+    EvidenceStore *-- EvidenceDatabase
+    EvidenceStore *-- ArtifactStore
+    EvidenceStore ..> ReportEvaluation : stores
+    EvidenceStore ..> MetricWindowEvaluation : stores
+    DirectMappingService --> EvidenceStore
+    LineageMaintenanceService --> EvidenceStore
+    CompanyDataPurger --> EvidenceStore
+

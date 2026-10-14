@@ -1,0 +1,56 @@
+sequenceDiagram
+    autonumber
+    actor Operator
+    participant CLI
+    participant App as CompanyIngestionService
+    participant Store as EvidenceStore
+    participant SEC as SecClient
+    participant Ingest as EvidenceIngestionService
+    participant Arelle as ArelleProcessor
+    participant Map as DirectMappingService
+
+    Operator->>CLI: ingest or scan ticker
+    CLI->>Store: schema preflight / explicit upgrade approval
+    CLI->>App: ingest_company(ticker, counts, force)
+    App->>Store: initialize and get_company_state
+
+    alt Stored window is current and complete
+        Store-->>App: current state
+        App-->>CLI: reused_local, no SEC or mapping
+    else Refresh is due, forced, or incomplete
+        App->>SEC: resolve company and discover lineage window
+        SEC-->>App: annual and quarterly filings
+
+        loop Each selected filing, sequentially
+            App->>Ingest: process filing
+            Ingest->>Store: find reusable snapshot by accession and profile
+            alt Verified compatible snapshot exists
+                Store-->>Ingest: snapshot reference
+                Ingest->>Store: mark attempt reused
+            else New extraction is required
+                Ingest->>Arelle: extract_evidence into attempt staging
+                Arelle-->>Ingest: detached FilingEvidenceBundle
+                Ingest->>Store: save snapshot plus report-v2 evaluation
+                Store-->>Ingest: stored snapshot id
+            end
+            Ingest-->>App: filing outcome
+        end
+
+        App->>Store: publish stronger successful active window
+        Store-->>App: current published state
+
+        alt At least one new accession succeeded
+            App->>Map: evaluate_company(require_complete_window=false)
+            Map->>Store: load exact snapshot/report inputs
+            Store-->>Map: candidate facts and prior evaluation identity
+            Map->>Store: save or reuse and publish metric evaluation
+            Store-->>Map: annual/quarterly result refs
+            Map-->>App: mapping result
+        else No new successful accession
+            Note over App,Map: Mapping is skipped
+        end
+        App-->>CLI: initialized, updated, no-update, no-filings, or fallback
+    end
+
+    CLI-->>Operator: summaries, warnings, paths, and exit code
+

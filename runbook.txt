@@ -15,8 +15,14 @@ uv run python tests\inspect_inline_ingestion.py
 #### Delete companies
 uv run --no-sync sec-inline-financials-purge msft aapl --execute
 
-#### Lineage maintenance
-uv run --no-sync sec-inline-financials-lineage SUCCESSOR_CIK PREDECESSOR_CIK --effective-date YYYY-MM-DD
+#### Scan for Update
+uv run --no-sync sec-inline-financials-scan
+
+#### Lineage maintenance :
+give b, add a; a->b
+	uv run --no-sync sec-inline-financials-lineage <SUCCESSOR_CIK PREDECESSOR_CIK>
+give a, add b; a->b
+uv run --no-sync sec-inline-financials-lineage-change <OLD_CURRENT_CIK> <NEW_SUCCESSOR_CIK> `
 
 xom : 0002115436 0000034088
 DKNG: 0001883685 0001772757
@@ -25,4 +31,4 @@ HHH: 0001981792 0001498828
 AMAM: 0001836056 0001990550
 FERG: 0001832433 0002011641
 PRMB: 0000884713 0002042694
-DMRC: 0001438231 0002119322
+DMRC: 0002119322 0001438231

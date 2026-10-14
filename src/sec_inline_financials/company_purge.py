@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
-from sec_inline_financials.errors import ArtifactError, CompanyPurgeError
+from sec_inline_financials.errors import ArtifactError, CompanyPurgeError, EvidenceStorageError
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
 _TICKER_PATTERN = re.compile(r"[A-Z0-9.-]{1,10}")
@@ -108,7 +108,15 @@ class CompanyDataPurger:
                 raise CompanyPurgeError(
                     f"Company purge would leave foreign-key violations in {table}; no data changed."
                 )
-        return CompanyPurgeResult(plan=plan, cleanup=self.cleanup_pending_files())
+        cleanup = self.cleanup_pending_files()
+        try:
+            self._store.database.compact()
+        except EvidenceStorageError as exc:
+            raise CompanyPurgeError(
+                "Company data was deleted, but SQLite could not release its freed disk space: "
+                f"{exc}"
+            ) from exc
+        return CompanyPurgeResult(plan=plan, cleanup=cleanup)
 
     def cleanup_pending_files(self) -> FileCleanupReport:
         """Retry committed file deletions without racing an active ingestion."""
