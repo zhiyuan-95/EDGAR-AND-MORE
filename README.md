@@ -409,12 +409,10 @@ Arelle, not from the SEC Company Facts API.
   facts must span 300–400 days. Quarterly duration facts must span 60–120 days,
   so six- and nine-month year-to-date facts are excluded from quarterly cells.
 - Quarter-end instant facts are eligible in the quarterly report.
-- The current table uses eligible dimension-free facts as each concept's consolidated
-  value. Direct Mapping additionally verifies entity and Target Metric scope.
-- Every dimensional fact appears immediately below its concept with its actual value,
-  complete axis/member scope, and a component reference such as `[D001.2]`.
-- When dimensional facts exist without an eligible dimension-free fact, the concept row
-  says `NO CONSOLIDATED FACT [D...]`. Dimensional values are never automatically summed.
+- The current table uses eligible dimension-free facts as its primary values.
+  Direct Mapping additionally verifies entity and Target Metric scope.
+- Dimensional-only concepts remain visible as `DIMENSIONAL [D...]`, with their
+  components below the table.
 - Exact dimension-free duplicates collapse to the most precise reported fact.
 - Conflicting values are shown as `CONFLICT [R...]` and quarantined. They are
   never averaged or guessed.
@@ -423,8 +421,6 @@ Arelle, not from the SEC Company Facts API.
   report, not proof that the filing contains no relevant evidence.
 - `[E...]` references connect table cells to Arelle fact evidence: raw value,
   label, period, unit, decimals, dimensions, validity, filing, and accession.
-- Component references such as `[D001.2]` connect dimensional child rows to their
-  exact dimensional evidence component.
 - Arelle calculation relationships and warning/error messages follow the fact
   evidence. Calculation 1.0 validation runs in deduplicating mode (`c10d`).
 

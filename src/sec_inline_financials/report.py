@@ -29,12 +29,6 @@ def _period_text(fact: Fact) -> str:
     return f"{fact.period_start.isoformat()} to {fact.period_end.isoformat()}"
 
 
-def _dimensional_row_label(dimensions: tuple[str, ...], occurrence: int) -> str:
-    scope = ", ".join(dimensions) if dimensions else "dimension details unavailable"
-    suffix = f" (occurrence {occurrence + 1})" if occurrence else ""
-    return f"  {scope}{suffix}"
-
-
 def render_report(report: ReportData) -> str:
     """Render the annual human-inspectable TXT artifact."""
     annual_results = sorted(report.annual_results, key=lambda result: result.fiscal_year)
@@ -115,34 +109,6 @@ def _render_period_report(
             dimensional_ids[(concept, period)] = evidence_id
             dimensional_evidence.append((evidence_id, concept, period, facts))
 
-    dimensional_table_facts: dict[tuple[str, str, tuple[str, ...], int], tuple[Fact, str]] = {}
-    dimensional_rows_by_concept: dict[str, list[tuple[tuple[str, ...], int]]] = {}
-    for concept in concepts:
-        max_occurrences: dict[tuple[str, ...], int] = {}
-        for period in periods:
-            occurrences: dict[tuple[str, ...], int] = {}
-            facts = dimensional_by_cell.get((concept, period), [])
-            dimensional_evidence_id = dimensional_ids.get((concept, period))
-            for component_index, fact in enumerate(facts, start=1):
-                occurrence = occurrences.get(fact.dimensions, 0)
-                occurrences[fact.dimensions] = occurrence + 1
-                max_occurrences[fact.dimensions] = max(
-                    max_occurrences.get(fact.dimensions, 0), occurrence + 1
-                )
-                if dimensional_evidence_id is not None:
-                    dimensional_table_facts[(concept, period, fact.dimensions, occurrence)] = (
-                        fact,
-                        f"{dimensional_evidence_id}.{component_index}",
-                    )
-        dimensional_rows_by_concept[concept] = sorted(
-            (
-                (dimensions, occurrence)
-                for dimensions, count in max_occurrences.items()
-                for occurrence in range(count)
-            ),
-            key=lambda item: (tuple(value.casefold() for value in item[0]), item[1]),
-        )
-
     issue_ids: dict[tuple[str, str], str] = {}
     issue_evidence: list[tuple[str, str, ReconciliationIssue]] = []
     for concept in concepts:
@@ -154,21 +120,9 @@ def _render_period_report(
             issue_ids[(concept, period)] = evidence_id
             issue_evidence.append((evidence_id, period, cell_issue))
 
-    first_column = "CONCEPT / DIMENSIONAL SCOPE"
-    dimensional_row_labels = {
-        (concept, dimensions, occurrence): _dimensional_row_label(dimensions, occurrence)
-        for concept in concepts
-        for dimensions, occurrence in dimensional_rows_by_concept[concept]
-    }
-    first_width = max(
-        [
-            len(first_column),
-            *(len(concept) for concept in concepts),
-            *(len(label) for label in dimensional_row_labels.values()),
-        ]
-    )
+    first_column = "CONCEPT"
+    first_width = max([len(first_column), *(len(concept) for concept in concepts)])
     cell_text: dict[tuple[str, str], str] = {}
-    dimensional_cell_text: dict[tuple[str, tuple[str, ...], int, str], str] = {}
     period_widths: dict[str, int] = {}
     for period in periods:
         values: list[str] = []
@@ -179,30 +133,18 @@ def _render_period_report(
             elif (concept, period) in issue_ids:
                 value = f"CONFLICT [{issue_ids[(concept, period)]}]"
             elif (concept, period) in dimensional_ids:
-                value = f"NO CONSOLIDATED FACT [{dimensional_ids[(concept, period)]}]"
+                value = f"DIMENSIONAL [{dimensional_ids[(concept, period)]}]"
             else:
                 value = _MISSING
             cell_text[(concept, period)] = value
             values.append(value)
-            for dimensions, occurrence in dimensional_rows_by_concept[concept]:
-                dimensional_fact = dimensional_table_facts.get(
-                    (concept, period, dimensions, occurrence)
-                )
-                if dimensional_fact is None:
-                    dimensional_value = _MISSING
-                else:
-                    fact, reference = dimensional_fact
-                    dimensional_value = f"{_format_decimal(fact.value)} [{reference}]"
-                dimensional_cell_text[(concept, dimensions, occurrence, period)] = dimensional_value
-                values.append(dimensional_value)
         period_widths[period] = max([len(period), *(len(value) for value in values)])
 
     lines = [
         f"{company.name.upper()} ({company.ticker}) — {title}",
         f"CIK: {company.cik}",
         f"{period_summary}: {', '.join(periods)}",
-        "Scope: reported numeric facts; dimensional values are shown under their concepts "
-        "and are never summed. Missing values are shown as — and are never inferred.",
+        "Scope: reported numeric facts; missing values are shown as — and are never inferred.",
         "",
         "STRUCTURED DATA TABLE",
     ]
@@ -216,13 +158,6 @@ def _render_period_report(
         for period in periods:
             row += f" | {cell_text[(concept, period)].rjust(period_widths[period])}"
         lines.append(row)
-        for dimensions, occurrence in dimensional_rows_by_concept[concept]:
-            label = dimensional_row_labels[(concept, dimensions, occurrence)]
-            dimensional_row = label.ljust(first_width)
-            for period in periods:
-                value = dimensional_cell_text[(concept, dimensions, occurrence, period)]
-                dimensional_row += f" | {value.rjust(period_widths[period])}"
-            lines.append(dimensional_row)
 
     lines.extend(["", "EVIDENCE", "=" * 80])
     for evidence_id, fact, result in evidence:
@@ -251,7 +186,7 @@ def _render_period_report(
         for index, fact in enumerate(facts, start=1):
             lines.extend(
                 [
-                    f"  Component {index} [{evidence_id}.{index}]: {fact.raw_value} {fact.unit}",
+                    f"  Component {index}: {fact.raw_value} {fact.unit}",
                     f"  Period: {_period_text(fact)}",
                     f"  Dimensions: {', '.join(fact.dimensions)}",
                     f"  Context: {fact.context_id}",
