@@ -32,6 +32,7 @@ from sec_inline_financials.schema_upgrade import ensure_schema_upgrade_approved
 from sec_inline_financials.sec_client import DiscoveredCompanyWindow, SecClient
 from sec_inline_financials.storage.config import evidence_runtime_paths
 from sec_inline_financials.storage.evidence_store import EvidenceStore
+from sec_inline_financials.storage.migrations import inspect_database_schema
 
 IngestionStatus = Literal[
     "initialized",
@@ -781,6 +782,29 @@ def _pluralized_count(count: int, singular: str, plural: str | None = None) -> s
     return f"{count} {singular if count == 1 else plural or singular + 's'}"
 
 
+def _status_report_lines(store: EvidenceStore, state: StoredCompanyState) -> tuple[str, ...]:
+    def display(value: date | None) -> str:
+        return value.isoformat() if value is not None else "unknown"
+
+    def table_row(
+        report: str, last_period_end: str, last_filing_date: str, next_check_date: str
+    ) -> str:
+        prefix = f"  {report:<16} | {last_period_end:<15} | "
+        return f"{prefix}{last_filing_date:<16} | {next_check_date}"
+
+    def report_row(label: str, form: Literal["10-K", "10-Q"], next_check: date | None) -> str:
+        latest = store.get_latest_active_filing_dates(state.company.ticker, form)
+        period_end, filing_date = latest if latest is not None else (None, None)
+        return table_row(label, display(period_end), display(filing_date), display(next_check))
+
+    return (
+        table_row("Report", "Last period end", "Last filing date", "Next check date"),
+        "  " + "-+-".join("-" * width for width in (16, 15, 16, 15)),
+        report_row("Annual (10-K)", "10-K", state.next_check_date_10k),
+        report_row("Quarterly (10-Q)", "10-Q", state.next_check_date_10q),
+    )
+
+
 def _print_scan_result(result: CompanyScanResult) -> None:
     for ticker in result.current_tickers:
         print(f"{ticker}: current")
@@ -847,6 +871,61 @@ def scan_main(argv: Sequence[str] | None = None) -> int:
         return 130
     _print_scan_result(result)
     return 1 if result.has_failures else 0
+
+
+def status_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Show stored annual and quarterly report dates without checking the SEC."
+    )
+    parser.add_argument(
+        "tickers", nargs="*", help="Optional tickers; omit to enter them at the prompt."
+    )
+    args = parser.parse_args(argv)
+    try:
+        values = args.tickers
+        if not values:
+            values = re.split(
+                r"[\s,]+", input("Enter company tickers (spaces or commas): ").strip()
+            )
+        tickers = _normalize_cli_tickers(values)
+        paths = evidence_runtime_paths(os.environ)
+        store = EvidenceStore(paths.database, paths.artifacts)
+        schema = inspect_database_schema(store.database)
+        if not schema.database_exists or schema.current_version == 0:
+            print("Error: No initialized evidence database was found.")
+            return 1
+        if not schema.is_current:
+            print("Error: The evidence database schema must be current to show status.")
+            return 1
+        missing = False
+        for ticker in tickers:
+            state = store.get_company_state(ticker)
+            if state is None:
+                print(f"{ticker}: not stored")
+                missing = True
+                continue
+            print(f"{state.company.ticker}:")
+            lineage = store.load_company_lineage(state.company.cik)
+            current_cik = (
+                lineage.canonical_current_cik
+                if lineage is not None
+                else normalize_cik(state.company.cik)
+            )
+            print(f"  Current CIK: {current_cik}")
+            if lineage is not None and lineage.edges:
+                chain = " -> ".join(member.cik for member in reversed(lineage.current_to_oldest))
+                print(f"  CIK lineage: {chain}")
+            for line in _status_report_lines(store, state):
+                print(line)
+        return 1 if missing else 0
+    except EOFError:
+        print("Error: Provide at least one company ticker.")
+        return 1
+    except ExplorerError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
 
 
 def main(argv: Sequence[str] | None = None) -> int:

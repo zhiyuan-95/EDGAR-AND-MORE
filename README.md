@@ -261,6 +261,22 @@ company/due/SEC-check/update/failure summary, and exits nonzero when a refresh f
 including when older local evidence remains available as a fallback. Running the
 scanner is still explicit; these next-check dates do not start a background job.
 
+To view stored report dates for selected companies without scanning or contacting
+the SEC, run:
+
+```powershell
+uv run --no-sync sec-inline-financials-status
+```
+
+Enter tickers separated by spaces or commas when prompted. You can also pass them
+directly, for example `uv run --no-sync sec-inline-financials-status AAPL MSFT`.
+The command shows the current CIK, any stored CIK lineage from oldest to current,
+and a table with separate 10-K and 10-Q rows. Its date columns are `Last period end`,
+`Last filing date`, and `Next check date`. A lineage chain appears only when a CIK
+transition has been recorded.
+An unknown date is shown as `unknown`; a ticker absent from the local database is
+shown as `not stored`. Status only reads an existing, current-schema database.
+
 The first successful call returns `initialized`. Later calls first inspect local
 state. A complete current window returns `reused_local` without SEC or Arelle until
 an annual/quarterly check is due. `--force`, missing evidence, or an active legacy

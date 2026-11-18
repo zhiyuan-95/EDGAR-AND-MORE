@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from sec_inline_financials.company_ingestion import (
     IngestionSettings,
     scan_companies,
 )
+from sec_inline_financials.company_lineage import LineageMaintenanceService, RegistrantIdentity
 from sec_inline_financials.errors import DiscoveryError, IngestionError
 from sec_inline_financials.evidence_ingestion import EvidenceIngestionService
 from sec_inline_financials.evidence_models import (
@@ -20,6 +22,7 @@ from sec_inline_financials.evidence_models import (
 )
 from sec_inline_financials.models import Company, Filing
 from sec_inline_financials.sec_client import DiscoveredCompanyWindow
+from sec_inline_financials.storage.database import EvidenceDatabase
 from sec_inline_financials.storage.evidence_store import EvidenceStore
 
 
@@ -91,6 +94,11 @@ class _BundleProcessor:
         return self._bundle
 
 
+class _RegistrantResolver:
+    def resolve_registrant(self, cik: str) -> RegistrantIdentity:
+        return RegistrantIdentity(cik=cik, legal_name=f"Company {cik}")
+
+
 def test_scan_companies_checks_only_companies_whose_refresh_is_due(tmp_path: Path) -> None:
     store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "artifacts")
     store.initialize()
@@ -141,11 +149,43 @@ def test_scan_cli_reports_every_stored_company_and_summary(
     )
     store = EvidenceStore(settings.database_path, settings.artifact_root)
     store.initialize()
-    _seed_company_state(
+    company = Company(ticker="CURRENT", cik="0000000001", name="Current Corp")
+    snapshot_id = _seed_company_state(
         store,
-        Company(ticker="CURRENT", cik="0000000001", name="Current Corp"),
+        company,
         next_check_date_10k=date(2026, 11, 1),
-        next_check_date_10q=date(2026, 11, 1),
+        next_check_date_10q=date(2026, 10, 20),
+    )
+    filing = _annual_filing(company)
+    quarterly = Filing(
+        accession=f"{company.cik}-25-000002",
+        filing_date=date(2025, 5, 2),
+        report_date=date(2025, 3, 31),
+        form="10-Q",
+        primary_document="current-20250331.htm",
+        url="https://www.sec.gov/Archives/current-20250331.htm",
+        registrant_cik=company.cik,
+        archive_owner_cik=company.cik,
+    )
+    quarterly_bundle = replace(
+        _evidence_bundle(company, quarterly), fiscal_year=2025, fiscal_period="Q2"
+    )
+    quarterly_outcome = EvidenceIngestionService(
+        sec_client=object(),  # type: ignore[arg-type]
+        processor=_BundleProcessor(quarterly_bundle),
+        store=store,
+    ).ingest_filing(company, quarterly)
+    assert quarterly_outcome.snapshot_id is not None
+    store.publish_filing_window(
+        company,
+        annual=[filing],
+        quarterly=[quarterly],
+        snapshot_ids={
+            filing.accession: snapshot_id,
+            quarterly.accession: quarterly_outcome.snapshot_id,
+        },
+        next_check_date_10k=date(2026, 11, 1),
+        next_check_date_10q=date(2026, 10, 20),
     )
     monkeypatch.setattr(
         company_ingestion.IngestionSettings,
@@ -158,8 +198,99 @@ def test_scan_cli_reports_every_stored_company_and_summary(
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "CURRENT: current" in output
-    assert "Scan summary: 1 company; 0 due; 0 SEC checks; 0 updated; 0 failed." in output
+    assert output == (
+        "CURRENT: current\nScan summary: 1 company; 0 due; 0 SEC checks; 0 updated; 0 failed.\n"
+    )
+
+    _seed_company_state(
+        store,
+        Company(ticker="OTHER", cik="0000000002", name="Other Corp"),
+        next_check_date_10k=date(2026, 11, 1),
+        next_check_date_10q=date(2026, 11, 1),
+    )
+    monkeypatch.setenv("SEC_INLINE_FINANCIALS_DATA_DIR", str(tmp_path))
+
+    def enter_tickers(prompt: str) -> str:
+        assert "tickers" in prompt
+        return "current, CURRENT"
+
+    monkeypatch.setattr("builtins.input", enter_tickers)
+    monkeypatch.setattr(
+        company_ingestion, "scan_companies", lambda **_kwargs: pytest.fail("status scanned")
+    )
+
+    exit_code = company_ingestion.status_main([])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == (
+        "CURRENT:\n"
+        "  Current CIK: 0000000001\n"
+        "  Report           | Last period end | Last filing date | Next check date\n"
+        "  -----------------+-----------------+------------------+----------------\n"
+        "  Annual (10-K)    | 2024-12-31      | 2025-02-01       | 2026-11-01\n"
+        "  Quarterly (10-Q) | 2025-03-31      | 2025-05-02       | 2026-10-20\n"
+    )
+
+
+def test_status_cli_reports_missing_tickers_without_creating_a_database(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data_root = tmp_path / "empty"
+    monkeypatch.setenv("SEC_INLINE_FINANCIALS_DATA_DIR", str(data_root))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "AAPL")
+
+    assert company_ingestion.status_main([]) == 1
+    assert capsys.readouterr().out == "Error: No initialized evidence database was found.\n"
+    assert not data_root.exists()
+
+    store = EvidenceStore(data_root / "evidence.sqlite3", data_root / "artifacts")
+    store.initialize()
+    _seed_company_state(
+        store,
+        Company(ticker="AAPL", cik="0000000001", name="Apple"),
+        next_check_date_10k=date(2026, 11, 1),
+        next_check_date_10q=date(2026, 10, 20),
+    )
+    monkeypatch.setattr(
+        EvidenceStore, "initialize", lambda self: pytest.fail("status initialized storage")
+    )
+    monkeypatch.setattr(
+        EvidenceDatabase, "connect", lambda self: pytest.fail("status opened storage for writing")
+    )
+
+    assert company_ingestion.status_main(["MISSING", "AAPL"]) == 1
+    output = capsys.readouterr().out
+    assert output.startswith("MISSING: not stored\nAAPL:\n")
+    assert "  Current CIK: 0000000001\n" in output
+    assert "Quarterly (10-Q) | unknown         | unknown          | 2026-10-20" in output
+
+
+def test_status_cli_shows_recorded_lineage_oldest_to_current(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence.sqlite3", tmp_path / "artifacts")
+    store.initialize()
+    _seed_company_state(
+        store,
+        Company(ticker="CHAIN", cik="0000000002", name="Current Corp"),
+        next_check_date_10k=date(2026, 11, 1),
+        next_check_date_10q=date(2026, 10, 20),
+    )
+    lineage = LineageMaintenanceService(store=store, registrant_resolver=_RegistrantResolver())
+    lineage.apply_link(lineage.preview_link("0000000002", "0000000001"))
+    store.apply_successor_promotion(lineage.preview_successor_promotion("0000000002", "0000000003"))
+    monkeypatch.setenv("SEC_INLINE_FINANCIALS_DATA_DIR", str(tmp_path))
+
+    assert company_ingestion.status_main(["CHAIN"]) == 0
+    output = capsys.readouterr().out
+    assert output.startswith(
+        "CHAIN:\n  Current CIK: 0000000003\n  CIK lineage: 0000000001 -> 0000000002 -> 0000000003\n"
+    )
+    assert "Annual (10-K)" in output
 
 
 def test_current_company_skips_direct_mapping(tmp_path: Path) -> None:
@@ -354,7 +485,7 @@ def _seed_company_state(
     *,
     next_check_date_10k: date,
     next_check_date_10q: date,
-) -> None:
+) -> int:
     filing = _annual_filing(company)
     bundle = _evidence_bundle(company, filing)
     outcome = EvidenceIngestionService(
@@ -371,6 +502,7 @@ def _seed_company_state(
         next_check_date_10k=next_check_date_10k,
         next_check_date_10q=next_check_date_10q,
     )
+    return outcome.snapshot_id
 
 
 def _annual_filing(company: Company) -> Filing:

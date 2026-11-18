@@ -18,6 +18,9 @@ uv run --no-sync sec-inline-financials-purge msft aapl --execute
 #### Scan for Update
 uv run --no-sync sec-inline-financials-scan
 
+#### Check status of companies
+uv run --no-sync sec-inline-financials-status
+
 #### Lineage maintenance :
 give b, add a; a->b
 	uv run --no-sync sec-inline-financials-lineage <SUCCESSOR_CIK PREDECESSOR_CIK>

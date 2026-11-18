@@ -81,6 +81,15 @@ individual failures and exits nonzero if any refresh fails, including a
 `refresh_failed_using_local_data` fallback. It is request-triggered and does not
 install or start a scheduler.
 
+To inspect the stored annual and quarterly dates for selected tickers without a
+scan, run `uv run --no-sync sec-inline-financials-status` and enter the tickers
+when prompted. Tickers may also be passed as arguments. The status command reads
+the existing database and does not check the SEC or apply schema migrations. It
+shows the current CIK for each ticker and any recorded predecessor-to-successor
+CIK chain, ordered from oldest to current. Annual 10-K and quarterly 10-Q dates
+appear as rows beneath the `Last period end`, `Last filing date`, and `Next check date`
+column headers.
+
 For programmatic request-triggered ingestion, use the same public service as the
 CLI:
 

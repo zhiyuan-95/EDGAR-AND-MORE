@@ -348,7 +348,7 @@ class EvidenceStore:
     def get_company_state(self, ticker: str) -> StoredCompanyState | None:
         """Return the locally known refresh state without contacting the SEC."""
         requested = ticker.strip().upper()
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 "SELECT id, cik, ticker, current_name, latest_10k_filing_date, "
                 "latest_10q_filing_date, next_check_date_10k, next_check_date_10q, "
@@ -420,6 +420,24 @@ class EvidenceStore:
                 active_filings_without_sections=missing_sections,
             )
 
+    def get_latest_active_filing_dates(
+        self, ticker: str, form: Literal["10-K", "10-Q"]
+    ) -> tuple[date, date] | None:
+        """Return the period end and filing date of the latest selected report by form."""
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT f.report_date, f.filing_date FROM filings AS f "
+                "JOIN companies AS c ON c.id = f.company_id "
+                "WHERE upper(c.ticker) = ? AND f.form = ? AND f.is_active = 1 "
+                "ORDER BY f.filing_date DESC, f.report_date DESC, f.accession DESC LIMIT 1",
+                (ticker.strip().upper(), form),
+            ).fetchone()
+        if row is None:
+            return None
+        return date.fromisoformat(str(row["report_date"])), date.fromisoformat(
+            str(row["filing_date"])
+        )
+
     def get_company_state_by_cik(self, cik: str) -> StoredCompanyState | None:
         """Resolve prior state when an SEC ticker symbol has changed."""
         normalized = normalize_cik(cik)
@@ -447,7 +465,7 @@ class EvidenceStore:
     def load_company_lineage(self, cik: str) -> CompanyLineage | None:
         """Load and validate the complete stored lineage containing ``cik``."""
         normalized = normalize_cik(cik)
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             return self._load_company_lineage(connection, normalized)
 
     def apply_lineage_patch(
